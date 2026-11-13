@@ -75,13 +75,13 @@ def export_trajectory(directory, geometry, trajectory, report):
 
 def create_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--brush-depth', type=float, default=1.0,
+    parser.add_argument('--brush-depth', type=float, default=5.0,
                         help='毛笔下压最大进给量，mm；根据笔画粗细控制Z进给，0为平面书写')
-    parser.add_argument('--z', type=float, default=420., help='笔尖接触写字平面高度，mm')
-    parser.add_argument('--x', type=float, nargs=2, default=[450., 500.], metavar=('MIN', 'MAX'), help='工作空间 X 范围')
-    parser.add_argument('--y', type=float, nargs=2, default=[50., 150.], metavar=('MIN', 'MAX'), help='工作空间 Y 范围')
+    parser.add_argument('--z', type=float, default=595., help='笔尖接触写字平面高度，mm')
+    parser.add_argument('--x', type=float, nargs=2, default=[480., 620.], metavar=('MIN', 'MAX'), help='工作空间 X 范围')
+    parser.add_argument('--y', type=float, nargs=2, default=[-130., 130.], metavar=('MIN', 'MAX'), help='工作空间 Y 范围')
     parser.add_argument('--lift', type=float, default=30., help='笔尖竖直提起高度，mm')
-    parser.add_argument('--tip-offset', type=float, default=20., help='握笔TCP沿工具+Z到笔尖的距离，mm')
+    parser.add_argument('--tip-offset', type=float, default=0., help='握笔TCP沿工具+Z到笔尖的距离，mm')
     parser.add_argument('--margin', type=float, default=2., help='字框边距，mm')
     parser.add_argument('--gap', type=float, default=4., help='字间距，mm')
     parser.add_argument('--curve-tolerance', type=float, default=.35, help='平滑曲线拟合容差，mm')
