@@ -4,10 +4,9 @@
   1. 从哈工大官方校徽 logo.png 中分割提取“哈”、“工”、“大”三个毛体书法单字；
   2. 采用欧氏距离变换 (Distance Transform) 计算字迹各处的物理笔宽；
   3. 采用 Zhang-Suen 形态学细化算法提取单像素宽的真实书法骨架；
-  4. 利用骨架测地线图搜索 (Geodesic BFS) 沿汉字规范书写笔顺提取中心线点列；
+  4. 按规范笔顺，由沿墨迹中心选取的控制点生成各笔中心线（STROKE_DEFS）；
   5. 进行等距弧长插值与粗细归一化，保存至 logo/hit_strokes.json 供轨迹规划使用。
 """
-from collections import deque
 from pathlib import Path
 import json
 import cv2
@@ -19,6 +18,7 @@ HERE = Path(__file__).resolve().parent.parent
 LOGO_DIR = HERE / 'logo'
 EXTRACTED_DIR = LOGO_DIR / 'extracted'
 STROKES_JSON = LOGO_DIR / 'hit_strokes.json'
+STROKES_VERSION = 4  # 改动笔画定义后递增，旧缓存会自动重建
 
 
 def extract_characters(logo_path=LOGO_DIR/'logo.png', out_dir=EXTRACTED_DIR):
@@ -119,57 +119,11 @@ def extract_characters(logo_path=LOGO_DIR/'logo.png', out_dir=EXTRACTED_DIR):
     return results
 
 
-def shortest_skeleton_path(skel, start_pt, end_pt):
-    """在单像素骨架的 8 邻域连通图上，通过广度优先搜索 (BFS) 计算两点间的最短测地线路径。
-
-    Args:
-        skel: 骨架布尔掩膜 (H, W)
-        start_pt: 起点坐标 (x, y)
-        end_pt: 终点坐标 (x, y)
-
-    Returns:
-        list[tuple[int, int]]: 严格位于骨架上的连续像素坐标序列 [(x0, y0), (x1, y1), ...]
-    """
-    pts = set(map(tuple, np.argwhere(skel > 0)))
-    pts_arr = np.array(list(pts))
-    # 匹配离指定坐标最近的真实骨架像素
-    d_start = np.hypot(pts_arr[:, 1] - start_pt[0], pts_arr[:, 0] - start_pt[1])
-    d_end = np.hypot(pts_arr[:, 1] - end_pt[0], pts_arr[:, 0] - end_pt[1])
-    s_y, s_x = pts_arr[np.argmin(d_start)]
-    e_y, e_x = pts_arr[np.argmin(d_end)]
-
-    # 8 邻域 BFS 搜索队列
-    queue = deque([(s_y, s_x)])
-    parent = {(s_y, s_x): None}
-    while queue:
-        curr = queue.popleft()
-        if curr == (e_y, e_x):
-            break
-        cy, cx = curr
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                if dy == 0 and dx == 0:
-                    continue
-                ny, nx = cy + dy, cx + dx
-                if (ny, nx) in pts and (ny, nx) not in parent:
-                    parent[(ny, nx)] = curr
-                    queue.append((ny, nx))
-
-    # 回溯父节点重构有序路径
-    path = []
-    curr = (e_y, e_x)
-    while curr is not None:
-        path.append((curr[1], curr[0]))  # 存储为 (x, y) 格式
-        curr = parent.get(curr)
-    path.reverse()
-    return path
-
-
 def smooth_resample(path, dist, num_samples=35):
-    """沿骨架路径按弧长等距重采样，并从欧氏距离变换图查询局部笔画粗细。
+    """沿中心线按弧长等距重采样，并从欧氏距离变换图查询局部笔画粗细。
 
     Args:
-        path: 离散骨架像素点集 [(x, y), ...]
+        path: 中心线像素点集 [(x, y), ...]
         dist: 距离变换矩阵 (H, W)，像素值即为墨迹半径
         num_samples: 重采样采样点数
 
@@ -215,6 +169,69 @@ def smooth_resample(path, dist, num_samples=35):
     return pts, np.array(thickness)
 
 
+def guided_pieces(*pieces):
+    """控制点 -> 约 1 像素间距的稠密中心线：段内三次样条平滑，段间相接处保留折角。"""
+    dense = []
+    for ctrl in pieces:
+        ctrl = np.asarray(ctrl, dtype=float)
+        chord = np.r_[0., np.cumsum(np.hypot(*np.diff(ctrl, axis=0).T))]
+        count = max(2, int(np.ceil(chord[-1])) + 1)
+        dense.append(CubicSpline(chord, ctrl)(np.linspace(0., chord[-1], count)))
+    return dense
+
+
+def resample_stroke(pieces, dist):
+    """各段按长度分配采样点后拼接，折角处恰为采样点，几何层据此顿笔。"""
+    dense = guided_pieces(*pieces)
+    lengths = [float(np.hypot(*np.diff(p, axis=0).T).sum()) for p in dense]
+    total = 55 if sum(lengths) > 150 else 35
+    all_pts, all_thick = [], []
+    for k, (piece, length) in enumerate(zip(dense, lengths)):
+        count = max(8, int(round(total * length / sum(lengths))))
+        pts, thick = smooth_resample(piece, dist, num_samples=count)
+        if k:  # 与上一段共用折点
+            pts, thick = pts[1:], thick[1:]
+        all_pts.append(pts)
+        all_thick.append(thick)
+    return np.vstack(all_pts), np.concatenate(all_thick)
+
+
+# 笔画定义：(名称, 类型, 分段控制点)。控制点为单字图像像素坐标，沿墨迹中心选取；
+# 段内平滑，多段相接处为折角（顿笔）。不走骨架，避免交叉处折弯、拐角毛刺和重描。
+STROKE_DEFS = {
+    'ha': [
+        ('左口左竖', '竖', [[(33, 101), (40, 120), (47, 145), (47, 170), (42, 201)]]),
+        ('左口横折', '横折', [[(67, 104), (90, 105), (110, 106), (124, 107)],
+                          [(124, 107), (113, 120), (104, 140), (99, 160)]]),
+        ('左口底横', '横', [[(47, 169), (70, 169), (90, 167), (100, 160)]]),
+        ('右合人字撇', '撇', [[(209, 22), (205, 61), (190, 100), (167, 143),
+                            (141, 184), (112, 222), (76, 253), (28, 268)]]),
+        ('右合人字捺', '捺', [[(186, 111), (204, 120), (219, 140), (233, 162),
+                            (243, 176), (254, 180), (268, 178), (282, 175)]]),
+        ('右合中横', '横', [[(145, 180), (168, 186), (185, 186), (207, 182)]]),
+        ('下口左竖', '竖', [[(143, 246), (137, 262), (138, 280), (140, 293)]]),
+        ('下口横折', '横折', [[(143, 246), (155, 241), (172, 237), (190, 236), (204, 234)],
+                          [(204, 234), (196, 245), (193, 260), (192, 277)]]),
+        ('下口底横', '横', [[(139, 281), (165, 282), (190, 279), (214, 277)]]),
+    ],
+    'gong': [  # 连笔：中竖从上横收笔处起笔，下横从中竖末端沿原路回笔
+        ('工字上横', '横', [[(80, 57), (125, 47), (170, 37)]]),
+        ('工字中竖', '竖', [[(170, 37), (155, 67), (137, 89), (120, 112), (108, 136),
+                          (92, 150), (75, 164), (58, 171), (39, 172)]]),
+        ('工字下横', '横', [[(39, 172), (58, 171), (75, 164), (92, 150), (108, 136),
+                          (122, 130), (139, 127), (156, 123), (175, 116)]]),
+    ],
+    'da': [
+        ('大字长横', '横', [[(44, 212), (64, 202), (84, 191), (104, 181), (125, 171),
+                          (146, 163), (167, 156), (188, 148), (213, 138)]]),
+        ('大字长撇', '撇', [[(138, 33), (140, 60), (137, 95), (132, 125), (127, 160), (121, 195),
+                          (114, 223), (104, 244), (90, 261), (72, 275), (50, 283), (24, 281)]]),
+        ('大字长捺', '捺', [[(121, 196), (137, 204), (152, 215), (162, 232), (173, 247),
+                          (186, 262), (200, 275), (215, 278), (230, 273), (249, 262)]]),
+    ],
+}
+
+
 def build_logo_strokes():
     """提取哈工大校徽真实书法笔画数据库，并序列化保存为 JSON。
 
@@ -225,66 +242,24 @@ def build_logo_strokes():
     """
     chars_data = extract_characters()
 
-    # 1. 工字 3 笔
-    gong_skel = chars_data['gong']['skel']
-    gong_dist = chars_data['gong']['dist']
-    gong_strokes_def = [
-        {'name': '工字上横', 'type': '横', 'raw_path': shortest_skeleton_path(gong_skel, (79, 53), (173, 36))},
-        {'name': '工字中竖', 'type': '竖', 'raw_path': shortest_skeleton_path(gong_skel, (165, 40), (39, 170))},
-        {'name': '工字下横', 'type': '横', 'raw_path': shortest_skeleton_path(gong_skel, (39, 170), (176, 117))},
-    ]
-
-    # 2. 大字 3 笔
-    da_skel = chars_data['da']['skel']
-    da_dist = chars_data['da']['dist']
-    da_strokes_def = [
-        {'name': '大字长横', 'type': '横', 'raw_path': shortest_skeleton_path(da_skel, (43, 209), (209, 124))},
-        {'name': '大字长撇', 'type': '撇', 'raw_path': shortest_skeleton_path(da_skel, (136, 33), (24, 279))},
-        {'name': '大字长捺', 'type': '捺', 'raw_path': shortest_skeleton_path(da_skel, (120, 197), (249, 261))},
-    ]
-
-    # 3. 哈字 9 笔（规范书法笔顺：左口 3 笔 + 右合 6 笔，横折内部不离纸）
-    ha_skel = chars_data['ha']['skel']
-    ha_dist = chars_data['ha']['dist']
-    ha_strokes_def = [
-        {'name': '左口左竖', 'type': '竖', 'raw_path': shortest_skeleton_path(ha_skel, (36, 117), (43, 184))},
-        {'name': '左口横折', 'type': '横折', 'raw_path': shortest_skeleton_path(ha_skel, (80, 105), (118, 106)) + shortest_skeleton_path(ha_skel, (118, 106), (111, 163))},
-        {'name': '左口底横', 'type': '横', 'raw_path': shortest_skeleton_path(ha_skel, (43, 184), (111, 163))},
-        {'name': '右合人字撇', 'type': '撇', 'raw_path': shortest_skeleton_path(ha_skel, (207, 22), (28, 268))},
-        {'name': '右合人字捺', 'type': '捺', 'raw_path': shortest_skeleton_path(ha_skel, (207, 22), (282, 174))},
-        {'name': '右合中横', 'type': '横', 'raw_path': shortest_skeleton_path(ha_skel, (150, 180), (195, 181))},
-        {'name': '下口左竖', 'type': '竖', 'raw_path': shortest_skeleton_path(ha_skel, (164, 237), (139, 283))},
-        {'name': '下口横折', 'type': '横折', 'raw_path': shortest_skeleton_path(ha_skel, (164, 237), (206, 231)) + shortest_skeleton_path(ha_skel, (206, 231), (207, 276))},
-        {'name': '下口底横', 'type': '横', 'raw_path': shortest_skeleton_path(ha_skel, (139, 283), (207, 276))},
-    ]
-
-    char_defs = {
-        '哈': (ha_strokes_def, ha_dist),
-        '工': (gong_strokes_def, gong_dist),
-        '大': (da_strokes_def, da_dist),
-    }
-
     normalized_library = {}
-    for char, (strokes_def, dist) in char_defs.items():
+    for key, strokes_def in STROKE_DEFS.items():
+        char, dist = chars_data[key]['character'], chars_data[key]['dist']
         h, w = dist.shape
         scale = 1000.0 / max(w, h)
         char_medians = []
         char_thickness = []
         stroke_metas = []
 
-        for s_def in strokes_def:
-            samples = 55 if len(s_def['raw_path']) > 150 else 35
-            pts, thick = smooth_resample(s_def['raw_path'], dist, num_samples=samples)
+        for name, kind, pieces in strokes_def:
+            pts, thick = resample_stroke(pieces, dist)
             # 像素坐标映射至字体归一化坐标系 (font_x 向右, font_y 向上)
             fx = pts[:, 0] * scale
             fy = (h - pts[:, 1]) * scale
             median_coords = np.column_stack([fx, fy]).tolist()
             char_medians.append(median_coords)
             char_thickness.append(thick.tolist())
-            stroke_metas.append({
-                'name': s_def['name'],
-                'type': s_def['type'],
-            })
+            stroke_metas.append({'name': name, 'type': kind})
 
         normalized_library[char] = {
             'character': char,
@@ -294,6 +269,7 @@ def build_logo_strokes():
             'thickness': char_thickness,
         }
 
+    normalized_library['_version'] = STROKES_VERSION
     STROKES_JSON.write_text(json.dumps(normalized_library, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'Authentic logo strokes saved to {STROKES_JSON}')
     return normalized_library
@@ -311,9 +287,9 @@ def get_logo_character_strokes(char):
             - thickness: 笔画粗细分布序列列表
             - metas: 笔画元信息字典列表 (名称、笔画类型)
     """
-    if not STROKES_JSON.exists():
-        build_logo_strokes()
-    data = json.loads(STROKES_JSON.read_text(encoding='utf-8'))
+    data = json.loads(STROKES_JSON.read_text(encoding='utf-8')) if STROKES_JSON.exists() else {}
+    if data.get('_version') != STROKES_VERSION:  # 无缓存或缓存过期则重建
+        data = build_logo_strokes()
     if char not in data:
         raise ValueError(f'Character {char!r} not in logo database; supported: 哈, 工, 大')
     char_entry = data[char]
