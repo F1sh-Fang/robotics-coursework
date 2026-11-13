@@ -21,6 +21,7 @@ from .kinematics import LIMITS_DEG, R_HOLD, forward_tip, select_branch
 DT = 0.001                 # 控制周期 1 ms (1000 Hz)
 MIN_SEGMENT_DURATION = 0.5  # 单段最小持续时长 0.5 s (避免极短笔画造成加速度超调)
 TIMING_RESERVE = 1.05       # 5% 的保守安全动力学时间裕度
+LONG_STROKE_MM = (30., 90.)  # 书写段短于 30 mm 用 write_speed，长于 90 mm 用 long_write_speed，中间线性过渡
 
 
 @dataclass
@@ -38,6 +39,7 @@ class MotionLimits:
         joint_jerk_deg: 各关节最大角加加速度限制 (deg/s³)
         joint_limits_deg: 各关节软限位范围 (6, 2) (deg)
         max_duration: 整条轨迹允许的最大超时时间 (s)
+        long_write_speed: 长笔画书写速度上限 (mm/s)，不大于 write_speed 时不启用
     """
     write_speed: float = 20.
     travel_speed: float = 40.
@@ -49,6 +51,7 @@ class MotionLimits:
     joint_jerk_deg: np.ndarray = field(default_factory=lambda: np.full(6, 1000.))
     joint_limits_deg: np.ndarray = field(default_factory=lambda: LIMITS_DEG.copy())
     max_duration: float = 1200.
+    long_write_speed: float = 0.
 
     def validate(self):
         """严格校验各项运动限值是否为有限正数以及数组维度是否合法。"""
@@ -65,9 +68,12 @@ class MotionLimits:
         if a.shape != (6, 2) or not np.isfinite(a).all() or np.any(a[:, 0] >= a[:, 1]):
             raise ValueError('Joint position limits must be a finite 6 x 2 matrix')
 
-    def phase_speed(self, phase):
-        """获取指定动作阶段所允许的最大线速度上限。"""
-        return self.write_speed if phase == 'DRAW' else self.travel_speed if phase == 'TRANSFER' else self.vertical_speed
+    def phase_speed(self, phase, length=0.):
+        """获取指定动作阶段所允许的最大线速度上限；书写段按段长 length (mm) 提速。"""
+        if phase == 'DRAW':
+            ramp = np.clip((length - LONG_STROKE_MM[0]) / (LONG_STROKE_MM[1] - LONG_STROKE_MM[0]), 0., 1.)
+            return self.write_speed + max(0., self.long_write_speed - self.write_speed) * float(ramp)
+        return self.travel_speed if phase == 'TRANSFER' else self.vertical_speed
 
 
 def seventh_order(tau):
@@ -155,7 +161,7 @@ class LocalTimeLaw:
         _, velocity, acceleration, jerk = evaluate_curve(arc, grid, 1.)
         # 计算整条曲线各点在各项动力学限值下的相对负担
         weight = np.maximum.reduce([
-            np.linalg.norm(velocity, axis=1) / limits.write_speed,
+            np.linalg.norm(velocity, axis=1) / limits.phase_speed('DRAW', arc.length),
             np.sqrt(np.linalg.norm(acceleration, axis=1) / limits.cart_accel),
             np.cbrt(np.linalg.norm(jerk, axis=1) / limits.cart_jerk),
         ])
@@ -223,7 +229,7 @@ def peak_norm(a):
     return float(np.linalg.norm(a, axis=1).max())
 
 
-def required_stretch(cart_derivatives, joint_derivatives, limits, phase):
+def required_stretch(cart_derivatives, joint_derivatives, limits, phase, length=0.):
     """根据当前段笛卡尔与关节空间的各阶导数，计算满足全部物理限值所需的时间放大倍数。
 
     对于 n 阶导数（速度 n=1，加速度 n=2，加加速度 n=3），时间拉伸因子比例为：
@@ -235,6 +241,7 @@ def required_stretch(cart_derivatives, joint_derivatives, limits, phase):
         joint_derivatives: 六关节导数三元组 (qd_v, qd_a, qd_j)
         limits: MotionLimits 动力学限值对象
         phase: 动作阶段 ('DRAW' / 'TRANSFER' / 'DESCEND' / 'LIFT')
+        length: 段长 (mm)，书写段据此确定速度上限
 
     Returns:
         float: 综合最小无超限所需的时间放大系数
@@ -242,7 +249,7 @@ def required_stretch(cart_derivatives, joint_derivatives, limits, phase):
     requirements = [0.]
     # 笛卡尔末端线速度、加速度、加加速度检验
     for order, data, limit in zip((1, 2, 3), cart_derivatives,
-                                  (limits.phase_speed(phase), limits.cart_accel, limits.cart_jerk)):
+                                  (limits.phase_speed(phase, length), limits.cart_accel, limits.cart_jerk)):
         requirements.append((peak_norm(data)/limit)**(1/order))
     # 6 个关节轴的角速度、角加速度、角加加速度检验
     for order, data, limit in zip((1, 2, 3), joint_derivatives,
@@ -298,7 +305,7 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None, *, adap
         qd = numerical_derivatives(q, 1/(len(tau_check)-1))
         # 初步评估七次多项式所需的基准时长
         duration = max(MIN_SEGMENT_DURATION,
-                       required_stretch((v, a, j), qd, limits, phase)*TIMING_RESERVE)
+                       required_stretch((v, a, j), qd, limits, phase, arc.length)*TIMING_RESERVE)
         time_law = None
 
         # 若为书写段且允许自适应优化，对比 LocalTimeLaw 与标准七次多项式
@@ -308,7 +315,7 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None, *, adap
             cq = branch.solve(cp, previous)
             cqd = numerical_derivatives(cq, 1/(len(tau_check)-1))
             candidate_duration = max(MIN_SEGMENT_DURATION,
-                                    required_stretch((cv, ca, cj), cqd, limits, phase)*TIMING_RESERVE)
+                                    required_stretch((cv, ca, cj), cqd, limits, phase, arc.length)*TIMING_RESERVE)
             # 仅当自适应时间律确实能缩短耗时时采纳
             if candidate_duration < duration:
                 time_law, duration = candidate, candidate_duration
@@ -323,7 +330,7 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None, *, adap
             p, v, a, j = evaluate_curve(arc, tau, duration, time_law)
             q = branch.solve(p, previous)
             qd = numerical_derivatives(q, DT)
-            factor = required_stretch((v, a, j), qd, limits, phase)
+            factor = required_stretch((v, a, j), qd, limits, phase, arc.length)
             if factor <= 1.00001:
                 break
             duration *= factor*TIMING_RESERVE
@@ -447,7 +454,8 @@ def validate_trajectory(geometry, trajectory, limits):
         'max_tip_speed_mm_s': peak_norm(trajectory['velocity']),
         'max_tip_accel_mm_s2': peak_norm(trajectory['acceleration']),
         'max_tip_jerk_mm_s3': peak_norm(trajectory['jerk']),
-        'limits': {'write_speed_mm_s': limits.write_speed, 'travel_speed_mm_s': limits.travel_speed,
+        'limits': {'write_speed_mm_s': limits.write_speed, 'long_write_speed_mm_s': limits.long_write_speed,
+                   'travel_speed_mm_s': limits.travel_speed,
                    'vertical_speed_mm_s': limits.vertical_speed, 'cart_accel_mm_s2': limits.cart_accel,
                    'cart_jerk_mm_s3': limits.cart_jerk, 'joint_speed_deg_s': limits.joint_speed_deg.tolist(),
                    'joint_accel_deg_s2': limits.joint_accel_deg.tolist(), 'joint_jerk_deg_s3': limits.joint_jerk_deg.tolist(),

@@ -123,13 +123,18 @@ def create_parser():
     parser.add_argument('--gap', type=float, default=4., help='字间距，mm')
     parser.add_argument('--curve-tolerance', type=float, default=.35, help='平滑曲线拟合容差，mm')
     parser.add_argument('--corner-angle', type=float, default=75., help='折角顿笔停稳角度阈值，deg')
-    parser.add_argument('--write-speed', type=float, default=50., help='书写速度上限，mm/s')
-    parser.add_argument('--travel-speed', type=float, default=80., help='空移速度上限，mm/s')
-    parser.add_argument('--vertical-speed', type=float, default=40., help='提落笔速度上限，mm/s')
+    parser.add_argument('--write-speed', type=float, default=40., help='书写速度上限，mm/s')
+    parser.add_argument('--long-write-speed', type=float, default=50.,
+                        help='长笔画书写速度上限，mm/s；≥90 mm 的笔画用此值，30~90 mm 线性过渡，设为 0 关闭')
+    parser.add_argument('--travel-speed', type=float, default=70., help='空移速度上限，mm/s')
+    parser.add_argument('--vertical-speed', type=float, default=35., help='提落笔速度上限，mm/s')
     parser.add_argument('--cart-accel', type=float, default=150., help='末端加速度上限，mm/s^2')
     parser.add_argument('--cart-jerk', type=float, default=3000., help='末端加加速度上限，mm/s^3')
-    parser.add_argument('--joint-vmax-deg', type=float, nargs=6, default=[50.] * 6, help='六关节速度上限，deg/s')
-    parser.add_argument('--joint-amax-deg', type=float, nargs=6, default=[180.] * 6, help='六关节加速度上限，deg/s^2')
+    # 关节速度/加速度上限沿用实验四配置 (experiment4_config.m)
+    parser.add_argument('--joint-vmax-deg', type=float, nargs=6, default=[30., 30., 30., 40., 40., 60.],
+                        help='六关节速度上限，deg/s')
+    parser.add_argument('--joint-amax-deg', type=float, nargs=6, default=[60., 60., 60., 80., 80., 120.],
+                        help='六关节加速度上限，deg/s^2')
     parser.add_argument('--joint-jmax-deg', type=float, nargs=6, default=[1000.] * 6, help='六关节加加速度上限，deg/s^3')
     parser.add_argument('--joint-limits', type=Path, help='6x2角度限位JSON，deg；默认采用项目配置')
     parser.add_argument('--seed-deg', type=float, nargs=6, help='起点选解参考角度，deg')
@@ -168,7 +173,8 @@ def main():
         np.array(args.joint_vmax_deg),
         np.array(args.joint_amax_deg),
         np.array(args.joint_jmax_deg),
-        max_duration=args.max_duration
+        max_duration=args.max_duration,
+        long_write_speed=args.long_write_speed,
     )
     if args.joint_limits:
         limits.joint_limits_deg = np.asarray(json.loads(args.joint_limits.read_text(encoding='utf-8')), dtype=float)

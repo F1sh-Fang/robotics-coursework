@@ -17,7 +17,7 @@ robotics-coursework/
 │   ├── kinematics.py              # POE 正运动学、球形腕解析逆解、最优分支锁定
 │   ├── generation.py              # 轨迹全流程驱动、TXT/CSV/JSON 导出与严密闭环精度自检
 │   ├── plotting.py                # 2D 毛笔接触圆盘模拟与 3D 笔尖/握笔 TCP 轨迹绘图
-│   └── logo_extractor.py          # 校徽单字分割、距离变换 (DT)、形态学骨架细化与测地线 BFS
+│   └── logo_extractor.py          # 校徽单字分割、距离变换 (DT)、笔画控制点中心线
 ├── logo/                          # 校徽原图、单字分割结果与提取笔画数据
 │   ├── logo.png                   # 原始校徽图片
 │   ├── hit_strokes.json           # 提取的书法笔顺、中心线与粗细信息数据库
@@ -61,8 +61,9 @@ python GenerateWritingTrajectory.py \
   --y -130 130 \
   --lift 10 \
   --tip-offset 0 \
-  --write-speed 50 \
-  --travel-speed 80 \
+  --write-speed 40 \
+  --travel-speed 70 \
+  --vertical-speed 35 \
   --cart-accel 150 \
   --cart-jerk 3000
 ```
@@ -73,10 +74,13 @@ python GenerateWritingTrajectory.py \
 - `--x 480 620`、`--y -130 130`：文字书写工作区域范围（mm），排版沿 +Y 方向行进，字形正上方朝向 -X；
 - `--lift 10`：笔画间抬笔转移的安全间隙高度（mm）；
 - `--tip-offset 0`：握笔 TCP 沿工具 +Z 轴到笔尖的长度偏移（mm）；
-- `--write-speed 50`：纸面书写最大线速度上限（mm/s）；
-- `--travel-speed 80`：空中平移最大线速度上限（mm/s）；
+- `--write-speed 40`：纸面书写最大线速度上限（mm/s），用于 30 mm 以下的短笔画；
+- `--long-write-speed 50`：长笔画书写速度上限（mm/s），90 mm 以上的笔画用此值，30~90 mm 之间线性过渡，设为 `0` 关闭；
+- `--travel-speed 70`：空中平移最大线速度上限（mm/s）；
+- `--vertical-speed 35`：提笔、落笔最大线速度上限（mm/s）；
 - `--cart-accel 150`：笛卡尔空间加速度上限（mm/s²）；
-- `--cart-jerk 3000`：笛卡尔空间加加速度上限（mm/s³）。
+- `--cart-jerk 3000`：笛卡尔空间加加速度上限（mm/s³）；
+- `--joint-vmax-deg`、`--joint-amax-deg`：六关节速度、加速度上限，默认沿用实验四配置（30 30 30 40 40 60 deg/s；60 60 60 80 80 120 deg/s²）。
 
 ## 输出文件清单（生成于 `output/`）
 
