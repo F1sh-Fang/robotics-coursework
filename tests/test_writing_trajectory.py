@@ -12,7 +12,7 @@ import numpy as np
 from writing.generation import export_trajectory
 from writing.geometry import ArcCurve, HERE, build_geometry, make_layout
 from writing.kinematics import R_HOLD, forward_tip
-from writing.timing import DT, MotionLimits, numerical_derivatives, plan_trajectory, required_stretch
+from writing.timing import DT, LocalTimeLaw, MotionLimits, numerical_derivatives, plan_trajectory, required_stretch
 
 
 class LogoGeometryTests(unittest.TestCase):
@@ -137,6 +137,80 @@ class LogoKinematicsAndTimingTests(unittest.TestCase):
             self.assertTrue(rad_file.exists())
             self.assertEqual(len(deg_file.read_text().strip().splitlines()), len(self.trajectory['time']))
 
+
+
+class LocalDrawingTimingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.geometry = build_geometry(z=593., x_range=(480., 620.),
+                                      y_range=(-130., 130.), lift=10.,
+                                      tip_offset=0., brush_depth=5.)
+        cls.limits = MotionLimits(write_speed=50., travel_speed=80., vertical_speed=40.,
+                                  cart_accel=150., cart_jerk=3000.,
+                                  joint_speed_deg=np.full(6, 50.))
+        cls.old, cls.old_report = plan_trajectory(cls.geometry, cls.limits, adaptive_drawing=False)
+        cls.new, cls.new_report = plan_trajectory(cls.geometry, cls.limits)
+
+    def test_slow_strokes_and_startup_improve(self):
+        self.assertLess(self.new_report['duration_s'], self.old_report['duration_s'] * .7)
+        # Long upper-left stroke in Ha and long horizontal stroke in Da.
+        for stroke_id in (3, 12):
+            records = []
+            for report in (self.old_report, self.new_report):
+                records.append(next(r for r in report['segments']
+                                    if r['stroke_id'] == stroke_id and r['phase'] == 'DRAW'))
+            self.assertLess(records[1]['duration_s'], records[0]['duration_s'] * .6)
+            startup = []
+            for trajectory, record in zip((self.old, self.new), records):
+                a, b = record['start_index'], record['end_index']
+                distance = np.linalg.norm(trajectory['tip'][a:b+1] - trajectory['tip'][a], axis=1)
+                startup.append(np.flatnonzero(distance >= 1.)[0] * DT)
+            self.assertLess(startup[1], startup[0] * .5)
+
+    def test_original_stops_and_air_motion_are_preserved(self):
+        for old, new in zip(self.old_report['segments'], self.new_report['segments']):
+            self.assertEqual((old['phase'], old['stroke_id']), (new['phase'], new['stroke_id']))
+            a, b = new['start_index'], new['end_index']
+            for field in ('velocity', 'acceleration', 'jerk'):
+                np.testing.assert_allclose(self.new[field][[a, b]], 0., atol=1e-7)
+            np.testing.assert_allclose(self.old['tip'][[old['start_index'], old['end_index']]],
+                                       self.new['tip'][[a, b]], atol=1e-8)
+            if new['phase'] != 'DRAW':
+                self.assertEqual(old['duration_s'], new['duration_s'])
+
+    def test_local_law_is_monotone_and_derivatives_agree(self):
+        stroke = self.geometry['strokes'][12]
+        arc = ArcCurve(self.geometry['segments'][stroke['draw_segment_ids'][0]]['curve'])
+        law = LocalTimeLaw(arc, self.limits)
+        tau = np.linspace(0., 1., 10001)
+        fields = law.at(tau)
+        self.assertEqual(fields[0][0], 0.)
+        self.assertAlmostEqual(fields[0][-1], 1.)
+        self.assertTrue(np.all(np.diff(fields[0]) >= 0.))
+        for field in fields[1:]:
+            np.testing.assert_allclose(field[[0, -1]], 0., atol=1e-8)
+        # Use a small differentiation step to resolve the density spline knots.
+        step = 1e-6
+        minus, plus = law.at(tau[3:-3] - step), law.at(tau[3:-3] + step)
+        for order in range(3):
+            numerical = (plus[order] - minus[order]) / (2 * step)
+            np.testing.assert_allclose(numerical, fields[order+1][3:-3], rtol=.003, atol=.01)
+
+    def test_local_timing_respects_cartesian_and_joint_limits(self):
+        for key, limit in (('velocity', self.limits.write_speed),
+                           ('acceleration', self.limits.cart_accel),
+                           ('jerk', self.limits.cart_jerk)):
+            for record in self.new_report['segments']:
+                a, b = record['start_index'], record['end_index']
+                bound = self.limits.phase_speed(record['phase']) if key == 'velocity' else limit
+                self.assertLessEqual(np.linalg.norm(self.new[key][a:b+1], axis=1).max(), bound * 1.001)
+        for derivative, bound in zip(numerical_derivatives(self.new['q'], DT),
+                                     (self.limits.joint_speed_deg, self.limits.joint_accel_deg,
+                                      self.limits.joint_jerk_deg)):
+            self.assertTrue(np.all(np.max(np.abs(np.rad2deg(derivative)), axis=0) <= bound * 1.001))
+        # Include TXT rounding and independent FK in the production-size case.
+        with tempfile.TemporaryDirectory() as directory:
+            export_trajectory(Path(directory), self.geometry, self.new, self.new_report)
 
 if __name__ == '__main__':
     unittest.main()

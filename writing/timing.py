@@ -2,6 +2,8 @@
 from dataclasses import dataclass, field
 import math
 import numpy as np
+from scipy.interpolate import CubicSpline, PchipInterpolator
+from scipy.ndimage import gaussian_filter1d, maximum_filter1d
 
 from .geometry import ArcCurve, PHASES, validate_geometry
 from .kinematics import LIMITS_DEG, R_HOLD, forward_tip, select_branch
@@ -54,8 +56,8 @@ def seventh_order(tau):
     return s, v, a, j
 
 
-def evaluate_curve(arc, tau, duration):
-    s, sd, sdd, sddd = seventh_order(tau)
+def evaluate_curve(arc, tau, duration, time_law=None):
+    s, sd, sdd, sddd = seventh_order(tau) if time_law is None else time_law.at(tau)
     s, sd, sdd, sddd = (s*arc.length, sd*arc.length/duration,
                          sdd*arc.length/duration**2, sddd*arc.length/duration**3)
     p, ps, pss, psss = arc.at(s, derivatives=True)
@@ -63,6 +65,46 @@ def evaluate_curve(arc, tau, duration):
     acceleration = ps*sdd[:, None]+pss*sd[:, None]**2
     jerk = ps*sddd[:, None]+3*pss*(sd*sdd)[:, None]+psss*sd[:, None]**3
     return p, velocity, acceleration, jerk
+
+
+class LocalTimeLaw:
+    """Redistribute time within a stroke, retaining its path and stopped ends.
+
+    A smooth, positive time density reserves more time near difficult curvature
+    and less on easy portions. Reparameterizing the seventh-order profile keeps
+    velocity, acceleration and jerk zero at the original stroke/corner stops.
+    The final duration is still checked against every Cartesian and joint limit.
+    """
+    def __init__(self, arc, limits):
+        grid = np.linspace(0., 1., 2001)
+        _, velocity, acceleration, jerk = evaluate_curve(arc, grid, 1.)
+        weight = np.maximum.reduce([
+            np.linalg.norm(velocity, axis=1) / limits.write_speed,
+            np.sqrt(np.linalg.norm(acceleration, axis=1) / limits.cart_accel),
+            np.cbrt(np.linalg.norm(jerk, axis=1) / limits.cart_jerk),
+        ])
+        # Smooth the time density itself: abrupt speed changes would add jerk.
+        weight = np.maximum(weight, weight.max() * 0.1)
+        weight = gaussian_filter1d(maximum_filter1d(weight, size=81), sigma=40.)
+        density = CubicSpline(grid, weight)
+        integral = density.antiderivative()
+        elapsed = integral(grid) - integral(0.)
+        self.density = CubicSpline(grid, weight / elapsed[-1])
+        self.integral = self.density.antiderivative()
+        self.inverse = PchipInterpolator(elapsed / elapsed[-1], grid)
+
+    def at(self, tau):
+        tau = np.clip(np.asarray(tau, dtype=float), 0., 1.)
+        u = self.inverse(tau)
+        for _ in range(3):
+            residual = self.integral(u) - self.integral(0.) - tau
+            u = np.clip(u - residual / self.density(u), 0., 1.)
+        s, v, a, j = seventh_order(u)
+        w, dw, ddw = self.density(u), self.density(u, 1), self.density(u, 2)
+        # Chain rule through the inverse cumulative time map, through order 3.
+        return (s, v / w, a / w**2 - v * dw / w**3,
+                j / w**3 - 3 * a * dw / w**4 - v * ddw / w**4
+                + 3 * v * dw**2 / w**5)
 
 
 def numerical_derivatives(q, step):
@@ -88,7 +130,7 @@ def required_stretch(cart_derivatives, joint_derivatives, limits, phase):
     return max(requirements)
 
 
-def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None):
+def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None, *, adaptive_drawing=True):
     validate_geometry(geometry)
     limits = limits or MotionLimits()
     limits.validate()
@@ -112,6 +154,17 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None):
         qd = numerical_derivatives(q, 1/(len(tau_check)-1))
         duration = max(MIN_SEGMENT_DURATION,
                        required_stretch((v, a, j), qd, limits, phase)*TIMING_RESERVE)
+        time_law = None
+        if adaptive_drawing and phase == 'DRAW':
+            candidate = LocalTimeLaw(arc, limits)
+            cp, cv, ca, cj = evaluate_curve(arc, tau_check, 1., candidate)
+            cq = branch.solve(cp, previous)
+            cqd = numerical_derivatives(cq, 1/(len(tau_check)-1))
+            candidate_duration = max(MIN_SEGMENT_DURATION,
+                                    required_stretch((cv, ca, cj), cqd, limits, phase)*TIMING_RESERVE)
+            # Keep the original profile when local timing offers no improvement.
+            if candidate_duration < duration:
+                time_law, duration = candidate, candidate_duration
         # Re-evaluate actual 1-ms sampling after timing, including all joint constraints.
         for attempt in range(6):
             count = max(20, int(math.ceil(duration/DT)))
@@ -119,7 +172,7 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None):
             if (ticks+count)*DT > limits.max_duration:
                 raise ValueError(f'Trajectory exceeds max-duration {limits.max_duration:g} s; inspect curvature/limits')
             tau = np.arange(count+1, dtype=float)/count
-            p, v, a, j = evaluate_curve(arc, tau, duration)
+            p, v, a, j = evaluate_curve(arc, tau, duration, time_law)
             q = branch.solve(p, previous)
             qd = numerical_derivatives(q, DT)
             factor = required_stretch((v, a, j), qd, limits, phase)
@@ -138,7 +191,8 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None):
                         'start_time_s': ticks*DT, 'end_time_s': (ticks+count)*DT,
                         'duration_s': duration, 'length_mm': arc.length,
                         'peak_tip_speed_mm_s': peak_norm(v), 'peak_tip_accel_mm_s2': peak_norm(a),
-                        'peak_tip_jerk_mm_s3': peak_norm(j), 'retiming_iterations': attempt})
+                        'peak_tip_jerk_mm_s3': peak_norm(j), 'retiming_iterations': attempt,
+                        'timing_profile': 'local' if time_law is not None else 'seventh_order'})
         ticks += count
         previous = q[-1]
         if progress:
@@ -228,6 +282,9 @@ def validate_trajectory(geometry, trajectory, limits):
                    'joint_position_deg': joint_limits.tolist()},
         'model': 'Existing structured spherical wrist; L=[491,450,450,84] mm; fixed R=diag(-1,1,-1)',
         'start_condition': 'At rest above the first stroke. No move from an external robot pose is included.',
+        'drawing_timing': ('Local time redistribution with original stopped corners preserved.'
+                           if any(r.get('timing_profile') == 'local' for r in trajectory['records'])
+                           else 'Seventh-order rest-to-rest timing.'),
         'derivative_check': 'Analytic Cartesian derivatives; dense numerical joint derivatives; 5% timing reserve; minimum segment duration 0.5 s.',
         'segments': trajectory['records'],
     }
