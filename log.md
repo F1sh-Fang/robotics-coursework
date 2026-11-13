@@ -18,3 +18,7 @@
 ## 第四次测试
 修改顿笔速度逻辑，速度大幅加快，已经够用，问题：
 - “哈”字写得不好，字形不好看，需要特调一下，应该是字比较复杂，cv出来的不好
+
+## 阶段总结与工程规范化（注释与文档更新）
+- 完成了全部 Python 模块 (`writing/`, `GenerateWritingTrajectory.py`, `PlotWritingTcpTrajectory.py`, `tests/`) 的详细中文注释与 Docstring 补充，包括算法推导原理、链式求导、微积分与逆解分支锁定逻辑；
+- 同步更新了 `README.md` 与 `doc/IMPLEMENTATION.md`，纠正了历史遗留参数，详细阐述了 `LocalTimeLaw` 局部自适应时间律、1 ms 控制网格与闭环验证标准；

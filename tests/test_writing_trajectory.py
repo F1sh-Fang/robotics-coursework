@@ -1,4 +1,4 @@
-"""Unit tests for HIT logo character writing, brush press depth, and dynamics."""
+"""自动化测试套件：校徽字符几何、毛笔下压进给、局部时间律、运动学与动力学校验。"""
 import json
 import os
 from pathlib import Path
@@ -16,15 +16,19 @@ from writing.timing import DT, LocalTimeLaw, MotionLimits, numerical_derivatives
 
 
 class LogoGeometryTests(unittest.TestCase):
+    """测试第一层无时间几何路径、字框排版与笔画下压深度特性。"""
+
     def test_cli_help(self):
+        """测试 CLI 命令行帮助信息是否正常输出，且包含关键参数。"""
         result = subprocess.run([sys.executable, '-B', str(HERE / 'GenerateWritingTrajectory.py'), '--help'],
                                 capture_output=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn(b'--brush-depth', result.stdout)
 
     def test_ha_gong_da_strokes_and_layout(self):
+        """测试哈工大三字 15 笔画分解、动作阶段生成与三维工作空间边界约束。"""
         g = build_geometry()
-        # 15 strokes total for authentic calligraphy: 哈 (9) + 工 (3) + 大 (3)
+        # 哈工大书法规范共 15 笔：哈 (9) + 工 (3) + 大 (3)
         self.assertEqual(len(g['strokes']), 15)
         self.assertEqual(len(g['cells']), 3)
         self.assertAlmostEqual(g['brush_depth_mm'], 1.0)
@@ -49,6 +53,7 @@ class LogoGeometryTests(unittest.TestCase):
                 self.assertTrue(np.all(points[:, 2] <= 420.0 + 1e-6))
 
     def test_gong_stays_on_paper_between_strokes(self):
+        """测试“工”字三笔连写特性：三笔之间笔尖始终保持在纸面接触，不抬空。"""
         for text in ('工', '哈工大', '工工'):
             with self.subTest(text=text):
                 g = build_geometry(text=text)
@@ -67,7 +72,8 @@ class LogoGeometryTests(unittest.TestCase):
                         np.testing.assert_allclose(before['end_tip_mm'], after['start_tip_mm'], atol=1e-9)
 
     def test_brush_depth_variations(self):
-        # When brush_depth=0, all draw points must strictly equal z
+        """测试毛笔下压进给参数 brush_depth 的物理下压效果。"""
+        # brush_depth=0 时退化为完全平面书写 (Z=420.0)
         g_flat = build_geometry(brush_depth=0.0)
         for s in g_flat['segments']:
             if s['phase'] == 'DRAW':
@@ -75,7 +81,7 @@ class LogoGeometryTests(unittest.TestCase):
                 pts = curve.at(np.linspace(0, curve.length, 51))
                 np.testing.assert_allclose(pts[:, 2], 420.0, atol=1e-9)
 
-        # When brush_depth=1.5, draw points must vary between 418.5 and 420.0
+        # brush_depth=1.5 时，书写段 Z 在 [418.5, 420.0] 范围内随笔宽连续变化
         g_deep = build_geometry(brush_depth=1.5)
         draw_z = []
         for s in g_deep['segments']:
@@ -88,6 +94,8 @@ class LogoGeometryTests(unittest.TestCase):
 
 
 class LogoKinematicsAndTimingTests(unittest.TestCase):
+    """测试运动学逆解锁定、时间网格、限位约束与导出文件验证。"""
+
     @classmethod
     def setUpClass(cls):
         cls.geometry = build_geometry(brush_depth=1.0)
@@ -95,6 +103,7 @@ class LogoKinematicsAndTimingTests(unittest.TestCase):
         cls.trajectory, cls.report = plan_trajectory(cls.geometry, cls.limits)
 
     def test_timing_minimum_and_subsecond_segments(self):
+        """测试单段最小持续时长保护逻辑。"""
         durations = [record['duration_s'] for record in self.report['segments']]
         self.assertGreaterEqual(min(durations), 0.5)
         self.assertLess(min(durations), 1.0)
@@ -105,6 +114,7 @@ class LogoKinematicsAndTimingTests(unittest.TestCase):
                                          self.limits, 'DRAW'), 0.)
 
     def test_forward_kinematics_and_timeline(self):
+        """测试 1 ms 时间网格以及 POE 正运动学闭环精度 (误差 < 1e-5 mm)。"""
         t = self.trajectory['time']
         q = self.trajectory['q']
         tip = self.trajectory['tip']
@@ -115,19 +125,19 @@ class LogoKinematicsAndTimingTests(unittest.TestCase):
         self.assertLess(np.max(np.abs(rotations - R_HOLD)), 1e-8)
 
     def test_joint_limits_and_dynamics(self):
+        """测试关节位置限位及速度、加速度、加加速度动力学上限。"""
         q = self.trajectory['q']
         qd = numerical_derivatives(q, DT)
         qdeg = np.rad2deg(q)
-        # Check position limits
         for i in range(6):
             self.assertTrue(np.all(qdeg[:, i] >= self.limits.joint_limits_deg[i, 0]))
             self.assertTrue(np.all(qdeg[:, i] <= self.limits.joint_limits_deg[i, 1]))
-        # Check velocity, acceleration, jerk bounds
         for deriv, bound in zip(qd, (self.limits.joint_speed_deg, self.limits.joint_accel_deg, self.limits.joint_jerk_deg)):
             peak = np.max(np.abs(np.rad2deg(deriv)), axis=0)
             self.assertTrue(np.all(peak <= bound * 1.001))
 
     def test_export_file_verification(self):
+        """测试轨迹导出文件的格式与完整性。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             out = Path(temp_dir)
             export_trajectory(out, self.geometry, self.trajectory, self.report)
@@ -138,8 +148,9 @@ class LogoKinematicsAndTimingTests(unittest.TestCase):
             self.assertEqual(len(deg_file.read_text().strip().splitlines()), len(self.trajectory['time']))
 
 
-
 class LocalDrawingTimingTests(unittest.TestCase):
+    """测试第四次迭代引入的局部自适应时间律 (LocalTimeLaw)。"""
+
     @classmethod
     def setUpClass(cls):
         cls.geometry = build_geometry(z=593., x_range=(480., 620.),
@@ -152,8 +163,8 @@ class LocalDrawingTimingTests(unittest.TestCase):
         cls.new, cls.new_report = plan_trajectory(cls.geometry, cls.limits)
 
     def test_slow_strokes_and_startup_improve(self):
+        """测试局部自适应时间律显著加速慢笔画与起步阶段 (时长缩减 > 30%)。"""
         self.assertLess(self.new_report['duration_s'], self.old_report['duration_s'] * .7)
-        # Long upper-left stroke in Ha and long horizontal stroke in Da.
         for stroke_id in (3, 12):
             records = []
             for report in (self.old_report, self.new_report):
@@ -168,6 +179,7 @@ class LocalDrawingTimingTests(unittest.TestCase):
             self.assertLess(startup[1], startup[0] * .5)
 
     def test_original_stops_and_air_motion_are_preserved(self):
+        """测试局部时间律保持了原有的顿笔停稳零冲击性质，且空中平移段耗时保持不变。"""
         for old, new in zip(self.old_report['segments'], self.new_report['segments']):
             self.assertEqual((old['phase'], old['stroke_id']), (new['phase'], new['stroke_id']))
             a, b = new['start_index'], new['end_index']
@@ -179,6 +191,7 @@ class LocalDrawingTimingTests(unittest.TestCase):
                 self.assertEqual(old['duration_s'], new['duration_s'])
 
     def test_local_law_is_monotone_and_derivatives_agree(self):
+        """测试 LocalTimeLaw 的严格单调性以及各阶链式求导公式与有限差分一致性。"""
         stroke = self.geometry['strokes'][12]
         arc = ArcCurve(self.geometry['segments'][stroke['draw_segment_ids'][0]]['curve'])
         law = LocalTimeLaw(arc, self.limits)
@@ -189,7 +202,6 @@ class LocalDrawingTimingTests(unittest.TestCase):
         self.assertTrue(np.all(np.diff(fields[0]) >= 0.))
         for field in fields[1:]:
             np.testing.assert_allclose(field[[0, -1]], 0., atol=1e-8)
-        # Use a small differentiation step to resolve the density spline knots.
         step = 1e-6
         minus, plus = law.at(tau[3:-3] - step), law.at(tau[3:-3] + step)
         for order in range(3):
@@ -197,7 +209,9 @@ class LocalDrawingTimingTests(unittest.TestCase):
             np.testing.assert_allclose(numerical, fields[order+1][3:-3], rtol=.003, atol=.01)
 
     def test_local_timing_respects_cartesian_and_joint_limits(self):
+        """测试局部时间重分配下，所有末端与关节动力学指标严格满足限制。"""
         for key, limit in (('velocity', self.limits.write_speed),
+
                            ('acceleration', self.limits.cart_accel),
                            ('jerk', self.limits.cart_jerk)):
             for record in self.new_report['segments']:

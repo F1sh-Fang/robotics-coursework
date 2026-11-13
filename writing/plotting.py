@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Plot the exported joint trajectory via independent FK, including pen offset.
+"""书法轨迹可视化绘图模块。
 
-python PlotWritingTcpTrajectory.py
-The default is noninteractive PNG output; add --show to open plot windows.
+主要功能：
+  1. 通过独立的正运动学 (FK) 从导出的关节文本直接回算笛卡尔笔尖和握笔点三维空间轨迹；
+  2. 绘制 2D 平面字框排版、轨迹中心线与基于 Z 向进给深度的毛笔粗细圆盘模拟图 (writing_layout_xy.png)；
+  3. 绘制 3D 笔尖与握笔 TCP 空间立体轨迹图 (writing_tcp_trajectory_3d.png)，清晰区分书写、抬落笔与空移阶段。
 """
 import argparse
 import json
@@ -25,6 +27,7 @@ HERE = Path(__file__).resolve().parent.parent
 
 
 def configure_fonts():
+    """自动探测并配置跨平台中文字体（支持 Windows 微软雅黑/黑体，Linux Noto Sans CJK/文泉驿）。"""
     font_candidates = [
         'C:/Windows/Fonts/msyh.ttc',
         'C:/Windows/Fonts/simhei.ttf',
@@ -41,8 +44,15 @@ def configure_fonts():
 
 
 def plot_layout(geometry, filename):
+    """绘制二维笔画排版图，采用连续接触圆盘物理叠加模拟真实的毛笔书法下压铺毫效果。
+
+    Args:
+        geometry: 几何路径字典 (包含字框 cells、笔画 strokes、样条 segments)
+        filename: 保存目标图像路径 (PNG)
+    """
     configure_fonts()
     fig, ax = plt.subplots(figsize=(10, 5.5), facecolor='white')
+    # 绘制文字正方形字框边界 (在 XY 坐标系下，-X 为字形上方，+Y 为字形行进方向)
     for cell in geometry['cells']:
         xmin, xmax = cell['x_mm']
         ymin, ymax = cell['y_mm']
@@ -60,25 +70,26 @@ def plot_layout(geometry, filename):
             spline = decode_spline(seg['curve'])
             s_grid = np.linspace(0, 1, 150)
             p = spline(s_grid)
+            # 计算当前点的下压深度 dz
             dz = np.maximum(0.0, z_plane - p[:, 2])
             tau = np.clip(dz / brush_depth, 0.15, 1.0)
-            # Physical brush contact circle radius in mm
+            # 物理接触圆盘半径随下压深度呈线性铺开
             radius_mm = cell_side * (0.015 + 0.050 * tau)
 
             for yi, xi, ri in zip(p[:, 1], -p[:, 0], radius_mm):
                 all_circles.append(Circle((yi, xi), ri))
 
-            # Centerline of stroke trajectory
+            # 绘制轨迹几何中心线
             ax.plot(p[:, 1], -p[:, 0], color='#c0392b', linewidth=0.9, alpha=0.85, zorder=4)
 
-        # Mark stroke start point with stroke index
+        # 在笔画起点处标注重顿落笔圆点及笔顺序号
         first = geometry['segments'][stroke['draw_segment_ids'][0]]
         p0 = np.asarray(first['start_tip_mm'])
         ax.scatter(p0[1], -p0[0], s=18, c='#e67e22', edgecolors='#9d471b', linewidth=0.8, zorder=5)
         ax.annotate(str(stroke['stroke_id'] + 1), (p0[1], -p0[0]), xytext=(4, 4),
                     textcoords='offset points', color='#9d471b', fontsize=8.5, fontweight='bold', zorder=6)
 
-    # Add brush circles collection (translucent ink with visible circle edges)
+    # 叠加半透明毛笔接触圆盘，直观还原毛笔水墨浓淡与字形饱满度
     if all_circles:
         collection = PatchCollection(all_circles, facecolor='#1a334d', edgecolor='#0e1e2f',
                                      linewidth=0.35, alpha=0.25, zorder=3)
@@ -94,7 +105,7 @@ def plot_layout(geometry, filename):
                  f'Z进给深度控制粗细 (Depth={brush_depth:.1f} mm) | 落笔基准平面 Z={z_plane:.1f} mm')
     ax.grid(alpha=0.18)
 
-    # Custom legend
+    # 图例配置
     handles = [
         Line2D([0], [0], color='#1a334d', lw=8, alpha=0.6, label='毛笔落笔粗细轮廓 (截面圆盘叠加)'),
         Line2D([0], [0], color='#c0392b', lw=1.2, label='末端轨迹中心线 (Trajectory Centerline)'),
@@ -109,6 +120,15 @@ def plot_layout(geometry, filename):
 
 
 def plot_outputs(directory=HERE/'output', show=False):
+    """读取导出的关节角与几何文件，通过正运动学回算并绘制 3D 轨迹图和 2D 排版图。
+
+    Args:
+        directory: 包含输出文件的目录路径
+        show: 是否在绘图后打开系统默认看图工具展示
+
+    Returns:
+        dict: 统计采样点数与空间包络范围的字典
+    """
     directory = Path(directory)
     configure_fonts()
     geometry = json.loads((directory/'writing_geometry.json').read_text(encoding='utf-8'))
@@ -117,10 +137,14 @@ def plot_outputs(directory=HERE/'output', show=False):
     t, q = data[:, 0], data[:, 1:]
     if data.shape[1] != 7 or len(data) != report['samples'] or not np.allclose(np.diff(t), DT, rtol=0, atol=2e-12):
         raise ValueError('Exported trajectory does not match report / 1-ms timeline')
+
+    # 从导出的关节角通过 POE 正运动学回算三维空间末端位置
     tip, grip, _ = forward_tip(q, geometry['tip_offset_tool_z_mm'])
     colors = plt.get_cmap('tab10')
     fig = plt.figure(figsize=(11, 8), facecolor='white')
     ax = fig.add_subplot(111, projection='3d')
+
+    # 分段绘制各笔画与空中转移轨迹
     for record in report['segments']:
         start, end = record['start_index'], record['end_index']
         stride = max(1, (end-start)//400)
@@ -132,14 +156,19 @@ def plot_outputs(directory=HERE/'output', show=False):
                 linestyle='-' if drawing else '--', alpha=1 if drawing else .7)
         if drawing:
             ax.text(*p[len(p)//2], f' {record["stroke_id"]+1}', fontsize=9)
+
+    # 绘制握笔 TCP 轨迹参考线
     sample = np.unique(np.r_[np.arange(0, len(t), max(1, len(t)//2000)), len(t)-1])
     ax.plot(grip[sample, 0], grip[sample, 1], grip[sample, 2], color='#70a3c4',
             linewidth=.6, alpha=.55, label='Grip TCP (20 mm offset)' if geometry['tip_offset_tool_z_mm'] == 20 else 'Grip TCP')
     ax.scatter(*tip[0], color='#277a43', s=40, marker='o')
     ax.scatter(*tip[-1], color='#b23d3d', s=55, marker='x')
+
+    # 绘制书写接触参考平面
     xr, yr, z = geometry['x_range_mm'], geometry['y_range_mm'], geometry['tip_plane_z_mm']
     px, py = np.meshgrid(xr, yr)
     ax.plot_surface(px, py, np.full_like(px, z, dtype=float), color='#e7edf3', alpha=.22, shade=False)
+
     bounds = np.vstack([tip, grip])
     low, high = bounds.min(axis=0), bounds.max(axis=0)
     low[:2] = [xr[0], yr[0]]
@@ -164,10 +193,11 @@ def plot_outputs(directory=HERE/'output', show=False):
     fig.tight_layout()
     fig.savefig(directory/'writing_tcp_trajectory_3d.png', dpi=180)
     plt.close(fig)
+
+    # 绘制 2D 排版图
     plot_layout(geometry, directory/'writing_layout_xy.png')
 
     if show:
-        # Keep generation headless. Open saved images only on explicit request.
         import webbrowser
         for name in ('writing_tcp_trajectory_3d.png', 'writing_layout_xy.png'):
             webbrowser.open((directory/name).resolve().as_uri())
@@ -175,6 +205,7 @@ def plot_outputs(directory=HERE/'output', show=False):
 
 
 def main():
+    """绘图命令行主函数。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--directory', type=Path, default=HERE/'output')
     parser.add_argument('--show', action='store_true')
@@ -184,3 +215,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
