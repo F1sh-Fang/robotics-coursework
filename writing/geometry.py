@@ -175,6 +175,8 @@ def build_geometry(text='哈工大', z=420., x_range=(450., 500.), y_range=(50.,
         center = (lo + hi) / 2
         scale = side / extent
 
+        continuous = cell['character'] == '工'
+        previous_contact = None
         for local_stroke, (points, thick) in enumerate(zip(raw_medians, raw_thickness)):
             stroke_meta = raw_metas[local_stroke] if local_stroke < len(raw_metas) else {}
             stroke_name = stroke_meta.get('name', f'Stroke-{local_stroke+1}')
@@ -198,23 +200,30 @@ def build_geometry(text='哈工大', z=420., x_range=(450., 500.), y_range=(50.,
             start_high = np.array([xyz[0, 0], xyz[0, 1], z + lift])
             end_high = np.array([xyz[-1, 0], xyz[-1, 1], z + lift])
 
-            # Air transfer between strokes
-            if previous_high is not None and np.linalg.norm(start_high - previous_high) > 1e-9:
-                add_segment('TRANSFER', control_spline(np.array([previous_high, start_high])), sid, cell['character_index'])
-
-            # Vertical descent to initial stroke contact
-            add_segment('DESCEND', control_spline(np.array([start_high, xyz[0]])), sid, cell['character_index'])
+            draw_ids = []
+            if continuous and local_stroke > 0:
+                # Keep the pen on paper between the three strokes of 工.
+                if np.linalg.norm(xyz[0] - previous_contact) > 1e-9:
+                    draw_ids.append(len(segments))
+                    add_segment('DRAW', control_spline(np.array([previous_contact, xyz[0]])),
+                                sid, cell['character_index'])
+            else:
+                # Air transfer and descent for a new pen-down run.
+                if previous_high is not None and np.linalg.norm(start_high - previous_high) > 1e-9:
+                    add_segment('TRANSFER', control_spline(np.array([previous_high, start_high])), sid, cell['character_index'])
+                add_segment('DESCEND', control_spline(np.array([start_high, xyz[0]])), sid, cell['character_index'])
 
             # 3D drawing strokes (corner-split for pauses/顿笔 without lifting off paper)
-            draw_ids = []
             for piece in split_corners(xyz, corner_angle):
                 curve, error = fit_curve(piece, tolerance)
                 draw_ids.append(len(segments))
                 add_segment('DRAW', curve, sid, cell['character_index'], error)
 
-            # Vertical lift from final stroke release
-            add_segment('LIFT', control_spline(np.array([xyz[-1], end_high])), sid, cell['character_index'])
-            previous_high = end_high
+            previous_contact = xyz[-1]
+            # 工 lifts only after its last stroke; other characters lift each stroke.
+            if not continuous or local_stroke == len(raw_medians) - 1:
+                add_segment('LIFT', control_spline(np.array([xyz[-1], end_high])), sid, cell['character_index'])
+                previous_high = end_high
 
             geometry['strokes'].append({
                 'stroke_id': sid,
@@ -281,8 +290,18 @@ def validate_geometry(geometry):
         phases = [s['phase'] for s in segments if s['stroke_id'] == stroke['stroke_id']]
         if phases[0] == 'TRANSFER':
             phases = phases[1:]
-        if len(phases) < 3 or phases[0] != 'DESCEND' or phases[-1] != 'LIFT' or set(phases[1:-1]) != {'DRAW'}:
-            raise ValueError('Each stroke needs descent, drawing, and a full lift')
+        siblings = [s for s in geometry['strokes'] if s['character_index'] == stroke['character_index']]
+        continuous = stroke['character'] == '工'
+        needs_descent = not continuous or stroke['stroke_id'] == siblings[0]['stroke_id']
+        needs_lift = not continuous or stroke['stroke_id'] == siblings[-1]['stroke_id']
+        if needs_descent:
+            if not phases or phases.pop(0) != 'DESCEND':
+                raise ValueError('Pen-down run must begin with descent')
+        if needs_lift:
+            if not phases or phases.pop() != 'LIFT':
+                raise ValueError('Pen-down run must end with a full lift')
+        if not phases or set(phases) != {'DRAW'}:
+            raise ValueError('Stroke must draw without unexpected pen lifts')
 
 
 class ArcCurve:

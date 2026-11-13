@@ -12,7 +12,7 @@ import numpy as np
 from writing.generation import export_trajectory
 from writing.geometry import ArcCurve, HERE, build_geometry, make_layout
 from writing.kinematics import R_HOLD, forward_tip
-from writing.timing import DT, MotionLimits, numerical_derivatives, plan_trajectory
+from writing.timing import DT, MotionLimits, numerical_derivatives, plan_trajectory, required_stretch
 
 
 class LogoGeometryTests(unittest.TestCase):
@@ -30,9 +30,9 @@ class LogoGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(g['brush_depth_mm'], 1.0)
 
         phases = [s['phase'] for s in g['segments']]
-        self.assertEqual(phases.count('DESCEND'), 15)
-        self.assertEqual(phases.count('LIFT'), 15)
-        self.assertLessEqual(phases.count('TRANSFER'), 14)
+        self.assertEqual(phases.count('DESCEND'), 13)
+        self.assertEqual(phases.count('LIFT'), 13)
+        self.assertLessEqual(phases.count('TRANSFER'), 12)
         self.assertGreaterEqual(phases.count('TRANSFER'), 10)
 
         for segment in g['segments']:
@@ -47,6 +47,24 @@ class LogoGeometryTests(unittest.TestCase):
             if segment['phase'] == 'DRAW':
                 self.assertTrue(np.all(points[:, 2] >= 419.0 - 1e-6))
                 self.assertTrue(np.all(points[:, 2] <= 420.0 + 1e-6))
+
+    def test_gong_stays_on_paper_between_strokes(self):
+        for text in ('工', '哈工大', '工工'):
+            with self.subTest(text=text):
+                g = build_geometry(text=text)
+                for cell in g['cells']:
+                    if cell['character'] != '工':
+                        continue
+                    segments = [s for s in g['segments']
+                                if s['character_index'] == cell['character_index']]
+                    if segments[0]['phase'] == 'TRANSFER':
+                        segments = segments[1:]
+                    self.assertEqual(segments[0]['phase'], 'DESCEND')
+                    self.assertEqual(segments[-1]['phase'], 'LIFT')
+                    self.assertTrue(all(s['phase'] == 'DRAW' for s in segments[1:-1]))
+                    self.assertEqual(len({s['stroke_id'] for s in segments[1:-1]}), 3)
+                    for before, after in zip(segments, segments[1:]):
+                        np.testing.assert_allclose(before['end_tip_mm'], after['start_tip_mm'], atol=1e-9)
 
     def test_brush_depth_variations(self):
         # When brush_depth=0, all draw points must strictly equal z
@@ -73,8 +91,18 @@ class LogoKinematicsAndTimingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.geometry = build_geometry(brush_depth=1.0)
-        cls.limits = MotionLimits(write_speed=30., travel_speed=50., vertical_speed=20.)
+        cls.limits = MotionLimits(write_speed=40., travel_speed=60., vertical_speed=20.)
         cls.trajectory, cls.report = plan_trajectory(cls.geometry, cls.limits)
+
+    def test_timing_minimum_and_subsecond_segments(self):
+        durations = [record['duration_s'] for record in self.report['segments']]
+        self.assertGreaterEqual(min(durations), 0.5)
+        self.assertLess(min(durations), 1.0)
+        zeros = np.zeros((3, 3))
+        joint_zeros = np.zeros((3, 6))
+        self.assertEqual(required_stretch((zeros, zeros, zeros),
+                                         (joint_zeros, joint_zeros, joint_zeros),
+                                         self.limits, 'DRAW'), 0.)
 
     def test_forward_kinematics_and_timeline(self):
         t = self.trajectory['time']

@@ -7,6 +7,8 @@ from .geometry import ArcCurve, PHASES, validate_geometry
 from .kinematics import LIMITS_DEG, R_HOLD, forward_tip, select_branch
 
 DT = 0.001
+MIN_SEGMENT_DURATION = 0.5
+TIMING_RESERVE = 1.05
 
 
 @dataclass
@@ -76,7 +78,7 @@ def peak_norm(a):
 
 
 def required_stretch(cart_derivatives, joint_derivatives, limits, phase):
-    requirements = [1.]
+    requirements = [0.]
     for order, data, limit in zip((1, 2, 3), cart_derivatives,
                                   (limits.phase_speed(phase), limits.cart_accel, limits.cart_jerk)):
         requirements.append((peak_norm(data)/limit)**(1/order))
@@ -108,7 +110,8 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None):
         except ValueError as exc:
             raise ValueError(f'Segment {index}, stroke {segment["stroke_id"]}, {phase}: {exc}') from exc
         qd = numerical_derivatives(q, 1/(len(tau_check)-1))
-        duration = required_stretch((v, a, j), qd, limits, phase)*1.10
+        duration = max(MIN_SEGMENT_DURATION,
+                       required_stretch((v, a, j), qd, limits, phase)*TIMING_RESERVE)
         # Re-evaluate actual 1-ms sampling after timing, including all joint constraints.
         for attempt in range(6):
             count = max(20, int(math.ceil(duration/DT)))
@@ -122,7 +125,7 @@ def plan_trajectory(geometry, limits=None, seed_deg=None, progress=None):
             factor = required_stretch((v, a, j), qd, limits, phase)
             if factor <= 1.00001:
                 break
-            duration *= factor*1.05
+            duration *= factor*TIMING_RESERVE
         else:
             raise ValueError(f'Timing did not converge at segment {index}')
         start = 0 if index == 0 else 1  # one shared endpoint, no duplicated timestamp
@@ -225,7 +228,7 @@ def validate_trajectory(geometry, trajectory, limits):
                    'joint_position_deg': joint_limits.tolist()},
         'model': 'Existing structured spherical wrist; L=[491,450,450,84] mm; fixed R=diag(-1,1,-1)',
         'start_condition': 'At rest above the first stroke. No move from an external robot pose is included.',
-        'derivative_check': 'Analytic Cartesian derivatives; dense numerical joint derivatives; 10% timing reserve.',
+        'derivative_check': 'Analytic Cartesian derivatives; dense numerical joint derivatives; 5% timing reserve; minimum segment duration 0.5 s.',
         'segments': trajectory['records'],
     }
     return report

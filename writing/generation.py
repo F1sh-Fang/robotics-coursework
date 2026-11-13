@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-"""生成“哈工大”校徽毛笔书法轨迹、逐点 1 ms 关节角度和末端数据文件。
-
-默认参数：
-- 文字：哈工大（提取自 logo/logo.png 校徽题字）
-- 笔尖接触平面 Z=420 mm，毛笔最大下压进给 brush-depth=1.0 mm（控制落笔粗细）
-- 工作范围 X=450..500 mm，Y=50..150 mm
-- 竖直提起高度 lift=30 mm，握笔TCP到笔尖 tip-offset=20 mm
+"""
+生成“哈工大”校徽毛笔书法轨迹、逐点 1 ms 关节角度和末端数据文件。
 """
 import argparse
 import json
@@ -80,18 +75,18 @@ def create_parser():
     parser.add_argument('--z', type=float, default=595., help='笔尖接触写字平面高度，mm')
     parser.add_argument('--x', type=float, nargs=2, default=[480., 620.], metavar=('MIN', 'MAX'), help='工作空间 X 范围')
     parser.add_argument('--y', type=float, nargs=2, default=[-130., 130.], metavar=('MIN', 'MAX'), help='工作空间 Y 范围')
-    parser.add_argument('--lift', type=float, default=30., help='笔尖竖直提起高度，mm')
+    parser.add_argument('--lift', type=float, default=10., help='笔尖竖直提起高度，mm')
     parser.add_argument('--tip-offset', type=float, default=0., help='握笔TCP沿工具+Z到笔尖的距离，mm')
     parser.add_argument('--margin', type=float, default=2., help='字框边距，mm')
     parser.add_argument('--gap', type=float, default=4., help='字间距，mm')
     parser.add_argument('--curve-tolerance', type=float, default=.35, help='平滑曲线拟合容差，mm')
     parser.add_argument('--corner-angle', type=float, default=75., help='折角顿笔停稳角度阈值，deg')
-    parser.add_argument('--write-speed', type=float, default=20., help='书写速度上限，mm/s')
-    parser.add_argument('--travel-speed', type=float, default=40., help='空移速度上限，mm/s')
-    parser.add_argument('--vertical-speed', type=float, default=15., help='提落笔速度上限，mm/s')
+    parser.add_argument('--write-speed', type=float, default=50., help='书写速度上限，mm/s')
+    parser.add_argument('--travel-speed', type=float, default=80., help='空移速度上限，mm/s')
+    parser.add_argument('--vertical-speed', type=float, default=40., help='提落笔速度上限，mm/s')
     parser.add_argument('--cart-accel', type=float, default=100., help='末端加速度上限，mm/s^2')
-    parser.add_argument('--cart-jerk', type=float, default=500., help='末端加加速度上限，mm/s^3')
-    parser.add_argument('--joint-vmax-deg', type=float, nargs=6, default=[45.] * 6, help='六关节速度上限，deg/s')
+    parser.add_argument('--cart-jerk', type=float, default=1000., help='末端加加速度上限，mm/s^3')
+    parser.add_argument('--joint-vmax-deg', type=float, nargs=6, default=[50.] * 6, help='六关节速度上限，deg/s')
     parser.add_argument('--joint-amax-deg', type=float, nargs=6, default=[180.] * 6, help='六关节加速度上限，deg/s^2')
     parser.add_argument('--joint-jmax-deg', type=float, nargs=6, default=[1000.] * 6, help='六关节加加速度上限，deg/s^3')
     parser.add_argument('--joint-limits', type=Path, help='6x2角度限位JSON，deg；默认采用项目配置')
