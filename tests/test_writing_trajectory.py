@@ -215,7 +215,7 @@ class LocalDrawingTimingTests(unittest.TestCase):
                            ('jerk', self.limits.cart_jerk)):
             for record in self.new_report['segments']:
                 a, b = record['start_index'], record['end_index']
-                bound = self.limits.phase_speed(record['phase']) if key == 'velocity' else limit
+                bound = self.limits.phase_speed(record['phase'], record['length_mm']) if key == 'velocity' else limit
                 self.assertLessEqual(np.linalg.norm(self.new[key][a:b+1], axis=1).max(), bound * 1.001)
         for derivative, bound in zip(numerical_derivatives(self.new['q'], DT),
                                      (self.limits.joint_speed_deg, self.limits.joint_accel_deg,

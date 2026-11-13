@@ -74,7 +74,8 @@ python GenerateWritingTrajectory.py \
 - `--x 480 620`、`--y -130 130`：文字书写工作区域范围（mm），排版沿 +Y 方向行进，字形正上方朝向 -X；
 - `--lift 10`：笔画间抬笔转移的安全间隙高度（mm）；
 - `--tip-offset 0`：握笔 TCP 沿工具 +Z 轴到笔尖的长度偏移（mm）；
-- `--write-speed 40`：纸面书写最大线速度上限（mm/s）；
+- `--write-speed 40`：纸面书写最大线速度上限（mm/s），用于 30 mm 以下的短笔画；
+- `--long-write-speed 50`：长笔画书写速度上限（mm/s），90 mm 以上的笔画用此值，30~90 mm 之间线性过渡，设为 `0` 关闭；
 - `--travel-speed 70`：空中平移最大线速度上限（mm/s）；
 - `--vertical-speed 35`：提笔、落笔最大线速度上限（mm/s）；
 - `--cart-accel 150`：笛卡尔空间加速度上限（mm/s²）；

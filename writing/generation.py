@@ -124,6 +124,8 @@ def create_parser():
     parser.add_argument('--curve-tolerance', type=float, default=.35, help='平滑曲线拟合容差，mm')
     parser.add_argument('--corner-angle', type=float, default=75., help='折角顿笔停稳角度阈值，deg')
     parser.add_argument('--write-speed', type=float, default=40., help='书写速度上限，mm/s')
+    parser.add_argument('--long-write-speed', type=float, default=50.,
+                        help='长笔画书写速度上限，mm/s；≥90 mm 的笔画用此值，30~90 mm 线性过渡，设为 0 关闭')
     parser.add_argument('--travel-speed', type=float, default=70., help='空移速度上限，mm/s')
     parser.add_argument('--vertical-speed', type=float, default=35., help='提落笔速度上限，mm/s')
     parser.add_argument('--cart-accel', type=float, default=150., help='末端加速度上限，mm/s^2')
@@ -171,7 +173,8 @@ def main():
         np.array(args.joint_vmax_deg),
         np.array(args.joint_amax_deg),
         np.array(args.joint_jmax_deg),
-        max_duration=args.max_duration
+        max_duration=args.max_duration,
+        long_write_speed=args.long_write_speed,
     )
     if args.joint_limits:
         limits.joint_limits_deg = np.asarray(json.loads(args.joint_limits.read_text(encoding='utf-8')), dtype=float)
