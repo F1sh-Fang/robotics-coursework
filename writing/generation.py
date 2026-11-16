@@ -114,7 +114,7 @@ def create_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--brush-depth', type=float, default=5.0,
                         help='毛笔下压最大进给量，mm；根据笔画粗细控制Z进给，0为平面书写')
-    parser.add_argument('--z', type=float, default=593., help='笔尖接触写字平面高度，mm')
+    parser.add_argument('--z', type=float, default=594., help='笔尖接触写字平面高度，mm')
     parser.add_argument('--x', type=float, nargs=2, default=[480., 620.], metavar=('MIN', 'MAX'), help='工作空间 X 范围')
     parser.add_argument('--y', type=float, nargs=2, default=[-130., 130.], metavar=('MIN', 'MAX'), help='工作空间 Y 范围')
     parser.add_argument('--lift', type=float, default=10., help='笔尖竖直提起高度，mm')

@@ -12,6 +12,7 @@ import numpy as np
 from writing.generation import export_trajectory
 from writing.geometry import ArcCurve, HERE, build_geometry, make_layout
 from writing.kinematics import R_HOLD, forward_tip
+from writing.logo_extractor import brush_pressure_profile, get_logo_character_strokes
 from writing.timing import DT, LocalTimeLaw, MotionLimits, numerical_derivatives, plan_trajectory, required_stretch
 
 
@@ -70,6 +71,78 @@ class LogoGeometryTests(unittest.TestCase):
                     self.assertEqual(len({s['stroke_id'] for s in segments[1:-1]}), 3)
                     for before, after in zip(segments, segments[1:]):
                         np.testing.assert_allclose(before['end_tip_mm'], after['start_tip_mm'], atol=1e-9)
+
+    def test_character_scale_and_local_brush_pressure(self):
+        g = build_geometry(brush_depth=5.)
+        clouds = {char: np.vstack([s['source_polyline_mm'] for s in g['strokes']
+                                  if s['character'] == char]) for char in '哈工大'}
+        spans = {char: np.ptp(points[:, :2], axis=0).max() for char, points in clouds.items()}
+        self.assertAlmostEqual(spans['工'] / spans['哈'], .70, delta=.002)
+        self.assertAlmostEqual(spans['工'] / spans['大'], .70, delta=.002)
+        pts = np.column_stack([np.linspace(0, 100, 101), np.zeros(101)])
+        base = np.full(101, .4)
+        pressure = brush_pressure_profile('右合中横', pts, base)
+        self.assertAlmostEqual(pressure[50] - base[50], .08)
+        for name in ('左口左竖', '左口横折', '左口底横', '下口左竖', '下口横折', '下口底横'):
+            pressure = brush_pressure_profile(name, pts, base)
+            np.testing.assert_allclose(pressure, .28)
+            self.assertLessEqual(brush_pressure_profile(name, pts, np.ones(101)).max(), .60)
+        bent = np.array([[0., 0.], [1., 0.], [2., 0.], [2., 1.], [2., 2.]])
+        folded = brush_pressure_profile('下口横折', bent, np.full(5, .5))
+        self.assertLess(folded[2], folded[-1])
+        for name in ('右合人字捺', '大字长捺'):
+            pressure = brush_pressure_profile(name, pts, base)
+            self.assertAlmostEqual(pressure[-1], .04)
+            self.assertTrue(np.all(np.diff(pressure[85:]) <= 1e-10))
+        horizontal = brush_pressure_profile('大字长横', pts, base)
+        self.assertTrue(np.isfinite(horizontal).all())
+        self.assertTrue(np.all(horizontal >= .04))
+
+    def test_crisp_entries_folds_and_exposed_tips(self):
+        g = build_geometry(brush_depth=5.)
+        for char in ('哈', '工'):
+            medians, pressures, metas = get_logo_character_strokes(char)
+            for points, pressure, meta in zip(medians, pressures, metas):
+                if meta['name'] in ('左口横折', '右合中横', '下口横折', '工字上横'):
+                    self.assertLess(points[1, 0], points[0, 0])
+                    self.assertLess(pressure[0], .1)
+                if meta['name'] in ('右合中横', '右合人字撇', '工字下横'):
+                    self.assertAlmostEqual(pressure[-1], .04)
+        for stroke in g['strokes']:
+            if stroke['stroke_name'] in ('左口横折', '下口横折'):
+                self.assertGreaterEqual(len(stroke['draw_segment_ids']), 3)
+
+    def test_gong_depth_is_independent_of_character_scale(self):
+        g = build_geometry(brush_depth=5.)
+        _, thickness, _ = get_logo_character_strokes('工')
+        strokes = [stroke for stroke in g['strokes'] if stroke['character'] == '工']
+        for stroke, pressure in zip(strokes, thickness):
+            points = np.asarray(stroke['source_polyline_mm'])
+            # Simplification preserves endpoints, whose depth must not shrink to 70%.
+            np.testing.assert_allclose(points[[0, -1], 2],
+                                       420. - 5. * pressure[[0, -1]], atol=1e-9)
+        self.assertEqual(g['cells'][1]['character_scale'], .70)
+
+    def test_da_horizontal_has_a_returning_hook(self):
+        medians, thickness, _ = get_logo_character_strokes('大')
+        points = medians[0]
+        turn = int(np.argmax(points[:, 0]))
+        self.assertLess(turn, len(points) - 2)
+        self.assertGreater(points[turn, 0] - points[-1, 0], 20.)
+        self.assertGreater(points[-1, 1] - points[turn, 1], 20.)
+        self.assertLess(points[1, 0], points[0, 0])
+        self.assertAlmostEqual(thickness[0][-1], .04)
+        g = build_geometry(text='大', brush_depth=5.)
+        stroke = g['strokes'][0]
+        first = g['segments'][stroke['draw_segment_ids'][0]]
+        last = g['segments'][stroke['draw_segment_ids'][-1]]
+        self.assertEqual(first['phase'], 'DRAW')
+        self.assertEqual(last['phase'], 'DRAW')
+        self.assertGreaterEqual(len(stroke['draw_segment_ids']), 3)
+        self.assertAlmostEqual(last['end_tip_mm'][2], 419.8)
+        phases = [s['phase'] for s in g['segments'] if s['stroke_id'] == 0]
+        self.assertEqual(phases.count('DESCEND'), 1)
+        self.assertEqual(phases.count('LIFT'), 1)
 
     def test_brush_depth_variations(self):
         """测试毛笔下压进给参数 brush_depth 的物理下压效果。"""

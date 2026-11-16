@@ -13,12 +13,13 @@ import cv2
 import numpy as np
 from PIL import Image
 from scipy.interpolate import CubicSpline
+from scipy.ndimage import gaussian_filter1d
 
 HERE = Path(__file__).resolve().parent.parent
 LOGO_DIR = HERE / 'logo'
 EXTRACTED_DIR = LOGO_DIR / 'extracted'
 STROKES_JSON = LOGO_DIR / 'hit_strokes.json'
-STROKES_VERSION = 4  # 改动笔画定义后递增，旧缓存会自动重建
+STROKES_VERSION = 9  # 改动笔画定义后递增，旧缓存会自动重建
 
 
 def extract_characters(logo_path=LOGO_DIR/'logo.png', out_dir=EXTRACTED_DIR):
@@ -201,29 +202,33 @@ def resample_stroke(pieces, dist):
 STROKE_DEFS = {
     'ha': [
         ('左口左竖', '竖', [[(33, 101), (40, 120), (47, 145), (47, 170), (42, 201)]]),
-        ('左口横折', '横折', [[(67, 104), (90, 105), (110, 106), (124, 107)],
+        ('左口横折', '横折', [[(72, 104), (67, 104)], [(67, 104), (90, 105), (110, 106), (124, 107)],
                           [(124, 107), (113, 120), (104, 140), (99, 160)]]),
         ('左口底横', '横', [[(47, 169), (70, 169), (90, 167), (100, 160)]]),
         ('右合人字撇', '撇', [[(209, 22), (205, 61), (190, 100), (167, 143),
                             (141, 184), (112, 222), (76, 253), (28, 268)]]),
         ('右合人字捺', '捺', [[(186, 111), (204, 120), (219, 140), (233, 162),
                             (243, 176), (254, 180), (268, 178), (282, 175)]]),
-        ('右合中横', '横', [[(145, 180), (168, 186), (185, 186), (207, 182)]]),
+        ('右合中横', '横', [[(150, 181), (145, 180)], [(145, 180), (168, 186), (185, 186), (207, 182)]]),
         ('下口左竖', '竖', [[(143, 246), (137, 262), (138, 280), (140, 293)]]),
-        ('下口横折', '横折', [[(143, 246), (155, 241), (172, 237), (190, 236), (204, 234)],
+        ('下口横折', '横折', [[(148, 244), (143, 246)], [(143, 246), (155, 241), (172, 237), (190, 236), (204, 234)],
                           [(204, 234), (196, 245), (193, 260), (192, 277)]]),
         ('下口底横', '横', [[(139, 281), (165, 282), (190, 279), (214, 277)]]),
     ],
     'gong': [  # 连笔：中竖从上横收笔处起笔，下横从中竖末端沿原路回笔
-        ('工字上横', '横', [[(80, 57), (125, 47), (170, 37)]]),
+        ('工字上横', '横', [[(85, 56), (80, 57)], [(80, 57), (125, 47), (170, 37)]]),
         ('工字中竖', '竖', [[(170, 37), (155, 67), (137, 89), (120, 112), (108, 136),
                           (92, 150), (75, 164), (58, 171), (39, 172)]]),
         ('工字下横', '横', [[(39, 172), (58, 171), (75, 164), (92, 150), (108, 136),
                           (122, 130), (139, 127), (156, 123), (175, 116)]]),
     ],
     'da': [
-        ('大字长横', '横', [[(44, 212), (64, 202), (84, 191), (104, 181), (125, 171),
-                          (146, 163), (167, 156), (188, 148), (213, 138)]]),
+        # 逆锋短入 -> 折向行笔 -> 右端提折 -> 短回锋；分段保留顿笔，避免圆弧大钩。
+        ('大字长横', '横', [[(49, 207), (40, 214)],
+                          [(40, 214), (64, 202), (84, 191), (104, 181), (125, 171),
+                           (146, 163), (167, 156), (188, 148), (211, 139), (221, 134)],
+                          [(221, 134), (219, 124)],
+                          [(219, 124), (211, 119)]]),
         ('大字长撇', '撇', [[(138, 33), (140, 60), (137, 95), (132, 125), (127, 160), (121, 195),
                           (114, 223), (104, 244), (90, 261), (72, 275), (50, 283), (24, 281)]]),
         ('大字长捺', '捺', [[(121, 196), (137, 204), (152, 215), (162, 232), (173, 247),
@@ -231,6 +236,56 @@ STROKE_DEFS = {
     ],
 }
 
+
+
+def brush_pressure_profile(name, points, thickness):
+    """按笔画调整铺毫：局部补压，收锋随行笔渐提；不改变书写基准平面。"""
+    distance = np.r_[0., np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))]
+    t = distance / distance[-1]
+    pressure = gaussian_filter1d(np.asarray(thickness, dtype=float), sigma=1., mode='nearest')
+    if name == '右合中横':
+        # 满深 5 mm 时中央补压 0.4 mm；两端渐入渐出，避免接笔墨团。
+        window = np.sin(np.pi * t) ** 2
+        pressure = np.minimum(1., pressure + .08 * window)
+    if name in ('左口横折', '右合中横', '下口横折', '工字上横'):
+        # 逆入只占数像素，回到原起笔点时恢复原有深度，主体铺毫不减。
+        turn = int(np.argmin(points[:, 0]))
+        if turn > 0:
+            u = np.clip(t / max(t[turn], 1e-9), 0., 1.)
+            smooth = u**3 * (10. - 15. * u + 6. * u**2)
+            pressure[:turn+1] = .04 + (pressure[turn] - .04) * smooth[:turn+1]
+    if name in ('左口横折', '下口横折'):
+        # 软毫横转竖先减压回弹，保留停稳转向，不在折角继续压墨。
+        corner = int(np.argmax(points[:, 0]))
+        if 0 < corner < len(points) - 1:
+            pressure = pressure - .08 * np.exp(-((t - t[corner]) / .06)**2)
+    if name in ('右合中横', '右合人字撇', '工字下横'):
+        # 只在暴露的末端出锋；口的交接端保留厚度，避免口字断接。
+        u = np.clip((t - .92) / .08, 0., 1.)
+        smooth = u**3 * (10. - 15. * u + 6. * u**2)
+        pressure = (1. - smooth) * pressure + smooth * .04
+    if name == '大字长横':
+        # 端部动作按实际路径位置调压：逆入渐按，提折减压，短回锋收尖。
+        start_turn = np.argmin(points[:, 0])
+        end_turn = np.argmax(points[:, 0])
+        start_t, end_t = t[start_turn], t[end_turn]
+        u = np.clip(t / max(start_t, 1e-9), 0., 1.)
+        smooth = u**3 * (10. - 15. * u + 6. * u**2)
+        pressure = np.where(t <= start_t, .04 + .58 * smooth, pressure)
+        pressure += .08 * np.exp(-((t - start_t) / .04) ** 2)
+        u = np.clip((t - end_t) / max(1. - end_t, 1e-9), 0., 1.)
+        smooth = u**3 * (10. - 15. * u + 6. * u**2)
+        pressure = (1. - smooth) * pressure + smooth * .04
+    if name in ('右合人字捺', '大字长捺'):
+        # 尖锋在最后 15% 路程逐渐提起，不在终点突然竖直拔笔。
+        u = np.clip((t - .85) / .15, 0., 1.)
+        smooth = u**3 * (10. - 15. * u + 6. * u**2)
+        pressure = (1. - smooth) * pressure + smooth * .04
+    if name in ('左口左竖', '左口横折', '左口底横', '下口左竖', '下口横折', '下口底横'):
+        # 两个口局部提浅：5 mm 满深时少压 0.6 mm，且最大下压为 3 mm。
+        # 不移动纸面基准，不补偿性拉长 XY，先避免软毫过铺和口内积墨。
+        pressure = np.clip(pressure - .12, .04, .60)
+    return np.clip(pressure, .04, 1.)
 
 def build_logo_strokes():
     """提取哈工大校徽真实书法笔画数据库，并序列化保存为 JSON。
@@ -253,6 +308,7 @@ def build_logo_strokes():
 
         for name, kind, pieces in strokes_def:
             pts, thick = resample_stroke(pieces, dist)
+            thick = brush_pressure_profile(name, pts, thick)
             # 像素坐标映射至字体归一化坐标系 (font_x 向右, font_y 向上)
             fx = pts[:, 0] * scale
             fy = (h - pts[:, 1]) * scale

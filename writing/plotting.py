@@ -72,9 +72,9 @@ def plot_layout(geometry, filename):
             p = spline(s_grid)
             # 计算当前点的下压深度 dz
             dz = np.maximum(0.0, z_plane - p[:, 2])
-            tau = np.clip(dz / brush_depth, 0.15, 1.0)
+            tau = np.clip(dz / brush_depth, 0., 1.0)
             # 物理接触圆盘半径随下压深度呈线性铺开
-            radius_mm = cell_side * (0.015 + 0.050 * tau)
+            radius_mm = cell_side * 0.065 * tau
 
             for yi, xi, ri in zip(p[:, 1], -p[:, 0], radius_mm):
                 all_circles.append(Circle((yi, xi), ri))
