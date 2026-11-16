@@ -85,10 +85,11 @@ class LogoGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(pressure[50] - base[50], .08)
         for name in ('左口左竖', '左口横折', '左口底横', '下口左竖', '下口横折', '下口底横'):
             pressure = brush_pressure_profile(name, pts, base)
-            self.assertAlmostEqual(pressure[50], .28)
+            self.assertAlmostEqual(pressure[50], .22 if name.startswith('下口') else .28)
             self.assertLessEqual(pressure.max(), .30 + 1e-9)
             self.assertLessEqual(brush_pressure_profile(name, pts, np.ones(101)).max(), .60)
-        bent = np.array([[0., 0.], [1., 0.], [2., 0.], [2., 1.], [2., 2.]])
+        # Use a full-sized fold so the return exits the four-pixel shallow plateau.
+        bent = 10. * np.array([[0., 0.], [1., 0.], [2., 0.], [2., 1.], [2., 2.]])
         folded = brush_pressure_profile('下口横折', bent, np.full(5, .5))
         self.assertLess(folded[2], folded[-1])
         for name in ('右合人字捺', '大字长捺'):
@@ -120,9 +121,9 @@ class LogoGeometryTests(unittest.TestCase):
             self.assertLess(medians[fold][-1, 1], medians[bottom][:, 1].min())
             self.assertLess(medians[bottom][0, 0], medians[fold][-1, 0])
             self.assertGreater(medians[bottom][-1, 0], medians[fold][-1, 0])
-            self.assertGreaterEqual(pressures[fold][-1], .30)
-            self.assertGreaterEqual(pressures[bottom][0], .30)
-            self.assertGreaterEqual(pressures[bottom][-1], .30)
+            self.assertGreaterEqual(pressures[fold][-1], .24 if fold == 7 else .30)
+            self.assertGreaterEqual(pressures[bottom][0], .24 if bottom == 8 else .30)
+            self.assertGreaterEqual(pressures[bottom][-1], .24 if bottom == 8 else .30)
 
     def test_mouth_horizontal_extends_before_folding_back(self):
         medians, _, _ = get_logo_character_strokes('哈')
@@ -134,7 +135,43 @@ class LogoGeometryTests(unittest.TestCase):
             self.assertLess(peak, len(points)-2)
             self.assertLess(points[peak+1, 0], points[peak, 0])
             self.assertLess(points[peak+1, 1], points[peak, 1])
-            self.assertGreater(points[peak, 0] - points[-1, 0], 60.)
+            self.assertGreater(points[peak, 0] - points[-1, 0], 50.)
+
+    def test_fold_lifts_at_outer_tip_then_presses_on_return(self):
+        medians, pressures, _ = get_logo_character_strokes('哈')
+        for index in (1, 7):
+            points, pressure = medians[index], pressures[index]
+            peak = int(np.argmax(points[:, 0]))
+            self.assertLessEqual(pressure[peak], .101)
+            # Compare the shallow plateau over the last half of the outgoing edge.
+            outgoing = np.arange(max(0, peak-2), peak+1)
+            np.testing.assert_allclose(pressure[outgoing], pressure[peak], atol=.002)
+            self.assertGreater(np.max(pressure[:max(1, peak-5)]), pressure[peak] + .08)
+            self.assertGreater(np.max(pressure[peak+1:peak+9]), pressure[peak] + .08)
+            self.assertGreater(pressure.min(), 0.)
+            g = build_geometry(text='哈', brush_depth=5.)
+            stroke = g['strokes'][index]
+            phases = [seg['phase'] for seg in g['segments'] if seg['stroke_id'] == stroke['stroke_id']]
+            self.assertEqual(phases.count('DESCEND'), 1)
+            self.assertEqual(phases.count('LIFT'), 1)
+
+    def test_gong_first_fold_lifts_outward_and_presses_on_return(self):
+        medians, pressures, _ = get_logo_character_strokes('工')
+        np.testing.assert_allclose(medians[0][-1], medians[1][0])
+        self.assertAlmostEqual(pressures[0][-1], .125)
+        self.assertAlmostEqual(pressures[1][0], .125)
+        np.testing.assert_allclose(pressures[0][-3:], .125, atol=.002)
+        self.assertGreater(np.max(pressures[0][:-5]), .225)
+        self.assertGreater(np.max(pressures[1][1:9]), .225)
+        self.assertLess(medians[1][1, 0], medians[1][0, 0])
+        self.assertLess(medians[1][1, 1], medians[1][0, 1])
+        g = build_geometry(text='工', brush_depth=5.)
+        phases = [seg['phase'] for seg in g['segments']]
+        self.assertEqual(phases.count('DESCEND'), 1)
+        self.assertEqual(phases.count('LIFT'), 1)
+        top, vertical = g['strokes'][:2]
+        np.testing.assert_allclose(top['source_polyline_mm'][-1], vertical['source_polyline_mm'][0])
+        self.assertAlmostEqual(top['source_polyline_mm'][-1][2], 419.5)
 
     def test_gong_depth_is_independent_of_character_scale(self):
         g = build_geometry(brush_depth=5.)

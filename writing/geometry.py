@@ -344,7 +344,7 @@ def build_geometry(text='哈工大', z=420., x_range=(450., 500.), y_range=(50.,
                 add_segment('DESCEND', control_spline(np.array([start_high, xyz[0]])), sid, cell['character_index'])
 
             # 纸面书写段：在急转折角处切分，实现顿笔停稳蓄势，转折不离纸
-            crisp_turn = stroke_name in ('大字长横', '左口横折', '下口横折')
+            crisp_turn = stroke_name in ('大字长横', '左口横折', '下口横折', '工字中竖')
             for piece in split_corners(xyz, min(corner_angle, 40.) if crisp_turn else corner_angle):
                 curve, error = fit_curve(piece, tolerance)
                 draw_ids.append(len(segments))

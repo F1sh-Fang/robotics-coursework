@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent.parent
 LOGO_DIR = HERE / 'logo'
 EXTRACTED_DIR = LOGO_DIR / 'extracted'
 STROKES_JSON = LOGO_DIR / 'hit_strokes.json'
-STROKES_VERSION = 12  # 改动笔画定义后递增，旧缓存会自动重建
+STROKES_VERSION = 15  # 改动笔画定义后递增，旧缓存会自动重建
 
 
 def extract_characters(logo_path=LOGO_DIR/'logo.png', out_dir=EXTRACTED_DIR):
@@ -218,8 +218,8 @@ STROKE_DEFS = {
         ('下口底横', '横', [[(134, 281), (165, 282), (190, 279), (214, 277)]]),
     ],
     'gong': [  # 连笔：中竖从上横收笔处起笔，下横从中竖末端沿原路回笔
-        ('工字上横', '横', [[(85, 56), (80, 57)], [(80, 57), (125, 47), (170, 37)]]),
-        ('工字中竖', '竖', [[(170, 37), (155, 67), (137, 89), (120, 112), (108, 136),
+        ('工字上横', '横', [[(85, 56), (80, 57)], [(80, 57), (125, 47), (170, 37), (178, 35)]]),
+        ('工字中竖', '竖', [[(178, 35), (170, 42)], [(170, 42), (155, 67), (137, 89), (120, 112), (108, 136),
                           (92, 150), (75, 164), (58, 171), (39, 172)]]),
         ('工字下横', '横', [[(39, 172), (58, 171), (75, 164), (92, 150), (108, 136),
                           (122, 130), (139, 127), (156, 123), (175, 116)]]),
@@ -297,6 +297,43 @@ def brush_pressure_profile(name, points, thickness):
             u = np.clip((.20 - t) / .20, 0., 1.)
             blend = u**3 * (10. - 15. * u + 6. * u**2)
             pressure = np.maximum(pressure, (.24 if name in ('下口横折', '下口底横') else .30) * blend)
+    if name in ('左口横折', '下口横折'):
+        # 以最外侧折点为零，单位为原图像素。提前提浅，整个外送段保持轻触，
+        # 折回 4 像素后再逐渐按下，最后恢复竖段深度；不在外尖处重压。
+        corner = int(np.argmax(points[:, 0]))
+        if 0 < corner < len(points) - 1:
+            relative = distance - distance[corner]
+            knots = np.array([-16., -9., 0., 4., 12., 20.])
+            levels = np.array([
+                np.interp(knots[0], relative, pressure),
+                .10 if name == '左口横折' else .08,
+                .10 if name == '左口横折' else .08,
+                .10 if name == '左口横折' else .08,
+                .32 if name == '左口横折' else .24,
+                np.interp(knots[-1], relative, pressure),
+            ])
+            for i in range(len(knots) - 1):
+                mask = (relative >= knots[i]) & (relative <= knots[i+1])
+                u = (relative[mask] - knots[i]) / (knots[i+1] - knots[i])
+                blend = u**3 * (10. - 15. * u + 6. * u**2)
+                pressure[mask] = levels[i] + (levels[i+1] - levels[i]) * blend
+    if name in ('工字上横', '工字中竖'):
+        # 第一折跨两笔：上横提前提浅并外送，中竖从同一深度折回。
+        # 工的深度系数为 .8；满深 5 mm 时 .125 对应轻压 .5 mm。
+        shallow = .125
+        if name == '工字上横':
+            relative = distance - distance[-1]
+            knots = np.array([-16., -9., 0.])
+            levels = np.array([np.interp(-16., relative, pressure), shallow, shallow])
+        else:
+            relative = distance
+            knots = np.array([0., 4., 12., 20.])
+            levels = np.array([shallow, shallow, .40, np.interp(20., relative, pressure)])
+        for i in range(len(knots) - 1):
+            mask = (relative >= knots[i]) & (relative <= knots[i+1])
+            u = (relative[mask] - knots[i]) / (knots[i+1] - knots[i])
+            blend = u**3 * (10. - 15. * u + 6. * u**2)
+            pressure[mask] = levels[i] + (levels[i+1] - levels[i]) * blend
     return np.clip(pressure, .04, 1.)
 
 def build_logo_strokes():
