@@ -3,7 +3,7 @@
 控制 6 自由度球形腕工业机器人末端夹持毛笔完成哈尔滨工业大学校徽毛体书法“**哈工大**”三个字的书写。
 系统直接从哈工大校徽图像中分割提取文字与真实粗细骨架，采用**三层解耦架构**（无时间 3D 几何路径、局部自适应动力学时间规划、锁定分支连续解析逆运动学），输出严格 1 ms 时间网格的高精度连续关节角度文本与仿真分析数据。
 
-所有长度单位使用 mm，时间使用 s，内部关节角使用 rad，外部报告与控制器输入支持 deg。详细算法推导与实现细节请参阅 [doc/IMPLEMENTATION.md](file:///home/f1sh/Documents/master/机器人学/robotics-coursework/doc/IMPLEMENTATION.md)。
+所有长度单位使用 mm，时间使用 s，内部关节角使用 rad，外部报告与控制器输入支持 deg。详细算法推导与实现细节请参阅 [doc/IMPLEMENTATION.md](doc/IMPLEMENTATION.md)。
 
 ```text
 robotics-coursework/
@@ -56,12 +56,14 @@ python GenerateWritingTrajectory.py
 ```bash
 python GenerateWritingTrajectory.py \
   --brush-depth 5.0 \
-  --z 593 \
+  --z 594 \
   --x 480 620 \
   --y -130 130 \
+  --gap 2 \
   --lift 10 \
   --tip-offset 0 \
   --write-speed 40 \
+  --long-write-speed 50 \
   --travel-speed 70 \
   --vertical-speed 35 \
   --cart-accel 150 \
@@ -69,9 +71,9 @@ python GenerateWritingTrajectory.py \
 ```
 
 主要参数说明：
-- `--brush-depth 5.0`：毛笔落笔下压最大进给量（单位 mm）。在细笔画/游丝处保持接触基准高度 $Z=593$，粗笔画与重顿处下压进给至 $Z=588$，软毫受压铺开，真实体现书法粗细浓淡；设为 `0` 时退化为完全平面书写；
-- `--z 593`：笔尖接触写字纸面的基准高度（mm）；
-- `--x 480 620`、`--y -130 130`：文字书写工作区域范围（mm），排版沿 +Y 方向行进，字形正上方朝向 -X；
+- `--brush-depth 5.0`：毛笔落笔下压最大进给量（单位 mm）。在细笔画/游丝处保持接触基准高度 $Z=594$，粗笔画与重顿处下压进给至 $Z=589$（“工”字独立采用 `0.8` 深度系数），软毫受压铺开，真实体现书法粗细浓淡；设为 `0` 时退化为完全平面书写；
+- `--z 594`：笔尖接触写字纸面的基准高度（mm）；
+- `--x 480 620`、`--y -130 130`：文字书写工作区域范围（mm），排版沿 +Y 方向行进，字形正上方朝向 -X（默认字间距 `--gap 2` mm，“工”字缩放至 70%）；
 - `--lift 10`：笔画间抬笔转移的安全间隙高度（mm）；
 - `--tip-offset 0`：握笔 TCP 沿工具 +Z 轴到笔尖的长度偏移（mm）；
 - `--write-speed 40`：纸面书写最大线速度上限（mm/s），用于 30 mm 以下的短笔画；
@@ -106,7 +108,7 @@ python PlotWritingTcpTrajectory.py --show
 
 ## 自动化测试
 
-运行全部 12 项覆盖几何约束、毛笔进给、局部时间律、运动学逆解与动力学限制的自动化测试：
+运行全部 20 项覆盖几何约束、毛笔进给、局部笔锋压力、局部时间律、运动学逆解与动力学限制的自动化测试：
 
 ```bash
 python -B -m unittest discover -s tests -v
