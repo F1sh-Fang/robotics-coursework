@@ -85,7 +85,8 @@ class LogoGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(pressure[50] - base[50], .08)
         for name in ('左口左竖', '左口横折', '左口底横', '下口左竖', '下口横折', '下口底横'):
             pressure = brush_pressure_profile(name, pts, base)
-            np.testing.assert_allclose(pressure, .28)
+            self.assertAlmostEqual(pressure[50], .28)
+            self.assertLessEqual(pressure.max(), .30 + 1e-9)
             self.assertLessEqual(brush_pressure_profile(name, pts, np.ones(101)).max(), .60)
         bent = np.array([[0., 0.], [1., 0.], [2., 0.], [2., 1.], [2., 2.]])
         folded = brush_pressure_profile('下口横折', bent, np.full(5, .5))
@@ -112,6 +113,29 @@ class LogoGeometryTests(unittest.TestCase):
             if stroke['stroke_name'] in ('左口横折', '下口横折'):
                 self.assertGreaterEqual(len(stroke['draw_segment_ids']), 3)
 
+    def test_ha_mouth_strokes_overlap_at_corners(self):
+        medians, pressures, _ = get_logo_character_strokes('哈')
+        for fold, bottom in ((1, 2), (7, 8)):
+            # Font Y points up: vertical stroke extends below the bottom stroke.
+            self.assertLess(medians[fold][-1, 1], medians[bottom][:, 1].min())
+            self.assertLess(medians[bottom][0, 0], medians[fold][-1, 0])
+            self.assertGreater(medians[bottom][-1, 0], medians[fold][-1, 0])
+            self.assertGreaterEqual(pressures[fold][-1], .30)
+            self.assertGreaterEqual(pressures[bottom][0], .30)
+            self.assertGreaterEqual(pressures[bottom][-1], .30)
+
+    def test_mouth_horizontal_extends_before_folding_back(self):
+        medians, _, _ = get_logo_character_strokes('哈')
+        for index in (1, 7):
+            points = medians[index]
+            peak = int(np.argmax(points[:, 0]))
+            # Library uses 1000/max(image dimensions) scale.
+            self.assertGreater(peak, 0)
+            self.assertLess(peak, len(points)-2)
+            self.assertLess(points[peak+1, 0], points[peak, 0])
+            self.assertLess(points[peak+1, 1], points[peak, 1])
+            self.assertGreater(points[peak, 0] - points[-1, 0], 60.)
+
     def test_gong_depth_is_independent_of_character_scale(self):
         g = build_geometry(brush_depth=5.)
         _, thickness, _ = get_logo_character_strokes('工')
@@ -120,7 +144,7 @@ class LogoGeometryTests(unittest.TestCase):
             points = np.asarray(stroke['source_polyline_mm'])
             # Simplification preserves endpoints, whose depth must not shrink to 70%.
             np.testing.assert_allclose(points[[0, -1], 2],
-                                       420. - 5. * pressure[[0, -1]], atol=1e-9)
+                                       420. - 5. * .8 * pressure[[0, -1]], atol=1e-9)
         self.assertEqual(g['cells'][1]['character_scale'], .70)
 
     def test_da_horizontal_has_a_returning_hook(self):

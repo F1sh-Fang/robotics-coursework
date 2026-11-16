@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent.parent
 LOGO_DIR = HERE / 'logo'
 EXTRACTED_DIR = LOGO_DIR / 'extracted'
 STROKES_JSON = LOGO_DIR / 'hit_strokes.json'
-STROKES_VERSION = 9  # 改动笔画定义后递增，旧缓存会自动重建
+STROKES_VERSION = 12  # 改动笔画定义后递增，旧缓存会自动重建
 
 
 def extract_characters(logo_path=LOGO_DIR/'logo.png', out_dir=EXTRACTED_DIR):
@@ -202,18 +202,20 @@ def resample_stroke(pieces, dist):
 STROKE_DEFS = {
     'ha': [
         ('左口左竖', '竖', [[(33, 101), (40, 120), (47, 145), (47, 170), (42, 201)]]),
-        ('左口横折', '横折', [[(72, 104), (67, 104)], [(67, 104), (90, 105), (110, 106), (124, 107)],
-                          [(124, 107), (113, 120), (104, 140), (99, 160)]]),
-        ('左口底横', '横', [[(47, 169), (70, 169), (90, 167), (100, 160)]]),
+        ('左口横折', '横折', [[(44, 107), (36, 108)], [(36, 108), (67, 104), (90, 105), (110, 106), (124, 107), (132, 107)],
+                          [(132, 107), (123, 115)],
+                          [(123, 115), (113, 120), (104, 140), (99, 160), (95, 174)]]),
+        ('左口底横', '横', [[(43, 171), (70, 169), (90, 167), (104, 164), (116, 164)]]),
         ('右合人字撇', '撇', [[(209, 22), (205, 61), (190, 100), (167, 143),
                             (141, 184), (112, 222), (76, 253), (28, 268)]]),
         ('右合人字捺', '捺', [[(186, 111), (204, 120), (219, 140), (233, 162),
                             (243, 176), (254, 180), (268, 178), (282, 175)]]),
         ('右合中横', '横', [[(150, 181), (145, 180)], [(145, 180), (168, 186), (185, 186), (207, 182)]]),
         ('下口左竖', '竖', [[(143, 246), (137, 262), (138, 280), (140, 293)]]),
-        ('下口横折', '横折', [[(148, 244), (143, 246)], [(143, 246), (155, 241), (172, 237), (190, 236), (204, 234)],
-                          [(204, 234), (196, 245), (193, 260), (192, 277)]]),
-        ('下口底横', '横', [[(139, 281), (165, 282), (190, 279), (214, 277)]]),
+        ('下口横折', '横折', [[(148, 244), (143, 246)], [(143, 246), (155, 241), (172, 237), (190, 236), (204, 234), (212, 233)],
+                          [(212, 233), (203, 242)],
+                          [(203, 242), (196, 245), (193, 260), (192, 277), (191, 288)]]),
+        ('下口底横', '横', [[(134, 281), (165, 282), (190, 279), (214, 277)]]),
     ],
     'gong': [  # 连笔：中竖从上横收笔处起笔，下横从中竖末端沿原路回笔
         ('工字上横', '横', [[(85, 56), (80, 57)], [(80, 57), (125, 47), (170, 37)]]),
@@ -284,7 +286,17 @@ def brush_pressure_profile(name, points, thickness):
     if name in ('左口左竖', '左口横折', '左口底横', '下口左竖', '下口横折', '下口底横'):
         # 两个口局部提浅：5 mm 满深时少压 0.6 mm，且最大下压为 3 mm。
         # 不移动纸面基准，不补偿性拉长 XY，先避免软毫过铺和口内积墨。
-        pressure = np.clip(pressure - .12, .04, .60)
+        pressure = np.clip(pressure - (.18 if name in ('下口左竖', '下口横折', '下口底横') else .12), .04, .60)
+    if name in ('左口横折', '下口横折', '左口底横', '下口底横'):
+        # 连口处不能成为虚尖：末段保持至少 1.5 mm 下压（brush_depth=5），
+        # 与延长后的相交路径共同抵消软毫拖尾；仍不超过两口的 3 mm 上限。
+        u = np.clip((t - .80) / .20, 0., 1.)
+        blend = u**3 * (10. - 15. * u + 6. * u**2)
+        pressure = np.maximum(pressure, (.24 if name in ('下口横折', '下口底横') else .30) * blend)
+        if name in ('左口底横', '下口底横'):
+            u = np.clip((.20 - t) / .20, 0., 1.)
+            blend = u**3 * (10. - 15. * u + 6. * u**2)
+            pressure = np.maximum(pressure, (.24 if name in ('下口横折', '下口底横') else .30) * blend)
     return np.clip(pressure, .04, 1.)
 
 def build_logo_strokes():
@@ -326,8 +338,11 @@ def build_logo_strokes():
         }
 
     normalized_library['_version'] = STROKES_VERSION
-    STROKES_JSON.write_text(json.dumps(normalized_library, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(f'Authentic logo strokes saved to {STROKES_JSON}')
+    try:
+        STROKES_JSON.write_text(json.dumps(normalized_library, ensure_ascii=False, indent=2), encoding='utf-8')
+        print(f'Authentic logo strokes saved to {STROKES_JSON}')
+    except PermissionError:
+        print(f'Authentic logo strokes generated in memory (cache locked: {STROKES_JSON})')
     return normalized_library
 
 

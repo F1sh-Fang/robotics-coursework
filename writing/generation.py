@@ -120,7 +120,7 @@ def create_parser():
     parser.add_argument('--lift', type=float, default=10., help='笔尖竖直提起高度，mm')
     parser.add_argument('--tip-offset', type=float, default=0., help='握笔TCP沿工具+Z到笔尖的距离，mm')
     parser.add_argument('--margin', type=float, default=2., help='字框边距，mm')
-    parser.add_argument('--gap', type=float, default=4., help='字间距，mm')
+    parser.add_argument('--gap', type=float, default=2., help='字间距，mm')
     parser.add_argument('--curve-tolerance', type=float, default=.35, help='平滑曲线拟合容差，mm')
     parser.add_argument('--corner-angle', type=float, default=75., help='折角顿笔停稳角度阈值，deg')
     parser.add_argument('--write-speed', type=float, default=40., help='书写速度上限，mm/s')

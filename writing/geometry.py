@@ -298,6 +298,7 @@ def build_geometry(text='哈工大', z=420., x_range=(450., 500.), y_range=(50.,
         # 原 logo 的工字墨迹高度约为哈/大的 65%；先采用 70% 的实写比例。
         character_scale = .70 if cell['character'] == '工' else 1.
         cell['character_scale'] = character_scale
+        cell['depth_scale'] = .80 if cell['character'] == '工' else 1.
         scale = side * character_scale / extent
         # 工在原题字中略偏下，缩小后下移半个剩余高度，保持下沿关系。
         x_center = np.mean(cell['x_mm']) + (side * .10 if cell['character'] == '工' else 0.)
@@ -313,7 +314,7 @@ def build_geometry(text='哈工大', z=420., x_range=(450., 500.), y_range=(50.,
             # 字体坐标转换：字体向右对齐工作坐标系 +Y，字体向上对齐工作坐标系 -X
             xy = (points - center) * scale
             # 毛笔深度独立于字形缩放：缩小工字时仍保留原本的铺毫下压量。
-            z_stroke = z - brush_depth * np.asarray(thick, dtype=float)
+            z_stroke = z - brush_depth * cell['depth_scale'] * np.asarray(thick, dtype=float)
             xyz = np.column_stack([
                 x_center - xy[:, 1],
                 np.mean(cell['y_mm']) + xy[:, 0],
